@@ -549,6 +549,76 @@ app.post('/api/save-all-answers', async (req, res) => {
 });
 
 
+// Complete Exam endpoint - handles both answer submission and completion status
+app.post('/api/complete-exam', async (req, res) => {
+  try {
+    const { candidateId, examName, answers, submitted } = req.body;
+
+    // Validate request
+    if (!candidateId || !examName || !Array.isArray(answers)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields or invalid answers format'
+      });
+    }
+
+    // Create a batch write for atomic operations
+    const batch = firestore.batch();
+
+    // Reference to the candidate document
+    const candidateRef = firestore.collection('candidates').doc(candidateId);
+
+    // Update candidate's submission status
+    batch.update(candidateRef, {
+      submitted: true,
+      examCompletedAt: new Date().toISOString()
+    });
+
+    // Process each answer
+    answers.forEach(({ questionId, answer, order, skipped }) => {
+      const formattedQuestionId = questionId.startsWith('Q') ? questionId : `Q${questionId}`;
+      
+      const answerDocRef = candidateRef
+        .collection('answers')
+        .doc(formattedQuestionId);
+
+      batch.set(answerDocRef, {
+        examName,
+        timestamp: new Date().toISOString(),
+        order,
+        answer: skipped ? null : parseInt(answer),
+        skipped: skipped || false,
+        submittedVia: 'completion'
+      });
+    });
+
+    // Commit all operations atomically
+    await batch.commit();
+
+    // Clear examination data from localStorage (this will be handled client-side)
+    res.status(200).json({
+      success: true,
+      message: 'Exam completed and answers submitted successfully',
+      metadata: {
+        candidateId,
+        examName,
+        submittedAt: new Date().toISOString(),
+        totalAnswers: answers.length,
+        skippedCount: answers.filter(a => a.skipped).length
+      }
+    });
+
+  } catch (error) {
+    console.error('Error completing exam:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to complete exam',
+      details: error.message
+    });
+  }
+});
+
+
 
 
 
@@ -1195,6 +1265,147 @@ app.get("/api/all-exam-results", async (req, res) => {
     });
   }
 });
+
+
+
+//Apis to show user there answers and correct answers
+app.get("/api/exams/qa", async (req, res) => { 
+  try {
+    const examsRef = firestore.collection("Exams");
+    const examSnapshot = await examsRef.get();
+    
+    const exams = [];
+    
+    // Fetch each exam and its subcollections
+    for (const examDoc of examSnapshot.docs) {
+      const examData = examDoc.data();
+      const examId = examDoc.id;
+      
+      // Get exam details subcollection
+      const examDetailsRef = examsRef.doc(examId);
+      const examDetailsSnapshot = await examDetailsRef.get();
+      
+      // Get questions subcollection
+      const questionsRef = examDetailsRef.collection("Questions");
+      const questionsSnapshot = await questionsRef.get();
+      
+      const questions = [];
+      questionsSnapshot.forEach(questionDoc => {
+        questions.push({
+          id: questionDoc.id,
+          ...questionDoc.data()
+        });
+      });
+
+      // Combine all data
+      exams.push({
+        id: examId,
+        ...examData,
+        examDetails: examDetailsSnapshot.data(),
+        questions: questions
+      });
+    }
+    
+    res.status(200).json({
+      success: true,
+      data: exams
+    });
+    
+  } catch (error) {
+    console.error("Error fetching exams:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch exams",
+      details: error.message
+    });
+  }
+});
+
+// API to fetch candidate answers by registration ID
+app.get('/api/candidate-answers/:registrationId', async (req, res) => {
+  try {
+    const { registrationId } = req.params;
+
+    // Validate registration ID
+    if (!registrationId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Registration ID is required'
+      });
+    }
+
+    // Reference to the candidate's answers collection
+    const answersRef = firestore
+      .collection('candidates')
+      .doc(registrationId)
+      .collection('answers');
+
+    // Fetch all answers for the candidate
+    const answersSnapshot = await answersRef.orderBy('order').get();
+
+    if (answersSnapshot.empty) {
+      return res.status(404).json({
+        success: false,
+        message: 'No answers found for this registration ID'
+      });
+    }
+
+    // Format the answers data
+    const answers = answersSnapshot.docs.map(doc => ({
+      questionId: doc.id,
+      ...doc.data(),
+      // Ensure consistent data types
+      answer: typeof doc.data().answer === 'number' ? doc.data().answer : null,
+      order: Number(doc.data().order),
+      skipped: Boolean(doc.data().skipped)
+    }));
+
+    // Get candidate details
+    const candidateRef = firestore.collection('candidates').doc(registrationId);
+    const candidateDoc = await candidateRef.get();
+    
+    if (!candidateDoc.exists) {
+      return res.status(404).json({
+        success: false,
+        message: 'Candidate not found'
+      });
+    }
+
+    const candidateData = candidateDoc.data();
+
+    // Prepare response
+    const response = {
+      success: true,
+      data: {
+        registrationId,
+        candidateDetails: {
+          name: candidateData.candidateName,
+          exam: candidateData.exam,
+          examDate: candidateData.examDate,
+          examCompletedAt: candidateData.examCompletedAt
+        },
+        answers: answers,
+        metadata: {
+          totalAnswers: answers.length,
+          skippedCount: answers.filter(a => a.skipped).length,
+          submittedAnswers: answers.filter(a => !a.skipped).length
+        }
+      }
+    };
+
+    res.status(200).json(response);
+
+  } catch (error) {
+    console.error('Error fetching candidate answers:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch candidate answers',
+      details: error.message
+    });
+  }
+});
+
+
 
 
 
