@@ -1406,6 +1406,162 @@ app.get('/api/candidate-answers/:registrationId', async (req, res) => {
 });
 
 
+//Winners store api 
+// Add this route to your index.js or appropriate router file
+
+app.post('/api/save-winner-choice', async (req, res) => {
+  try {
+    const {
+      examTitle,
+      registrationNumber,
+      rank,
+      selectedOption
+    } = req.body;
+
+    // Validate required fields
+    if (!examTitle || !registrationNumber || !rank || !selectedOption) {
+      return res.status(400).json({
+        success: false,
+        error: 'Missing required fields. Please provide examTitle, registrationNumber, rank, and selectedOption'
+      });
+    }
+
+    // Validate selectedOption
+    if (!['product', 'cash'].includes(selectedOption)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid selectedOption. Must be either "product" or "cash"'
+      });
+    }
+
+    // Get current date in DD/MM/YYYY format (for data field only)
+    const today = new Date();
+    const currentDate = `${today.getDate().toString().padStart(2, '0')}/${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getFullYear()}`;
+
+    // New structure: Winners/{examTitle}/{registrationNumber}
+    const winnerRef = realtimeDatabase.ref(`Winners/${examTitle}/${registrationNumber}`);
+
+    // Check if entry already exists
+    const snapshot = await winnerRef.once('value');
+    if (snapshot.exists()) {
+      return res.status(409).json({
+        success: false,
+        error: 'Winner choice already recorded for this registration number'
+      });
+    }
+
+    // Prepare winner details
+    const winnerData = {
+      registrationNumber,
+      examTitle,
+      rank,
+      selectedOption,
+      status: 'pending',
+      dateCreated: currentDate
+    };
+
+    // Get candidate details from Realtime Database
+    const candidateRef = realtimeDatabase.ref(`candidates/${registrationNumber}`);
+    const candidateSnapshot = await candidateRef.once('value');
+
+    if (candidateSnapshot.exists()) {
+      const candidateData = candidateSnapshot.val();
+      winnerData.candidateDetails = {
+        name: candidateData.candidateName,
+        exam: candidateData.exam,
+        examDate: candidateData.examDate
+      };
+    }
+
+    // Save winner details
+    await winnerRef.set(winnerData);
+
+    // Prepare response
+    const response = {
+      success: true,
+      data: {
+        message: 'Winner choice saved successfully',
+        details: {
+          examTitle,
+          registrationNumber,
+          rank,
+          selectedOption,
+          dateRecorded: currentDate,
+          ...(winnerData.candidateDetails || {})
+        }
+      }
+    };
+
+    res.status(200).json(response);
+
+  } catch (error) {
+    console.error('Error saving winner choice:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to save winner choice',
+      details: error.message
+    });
+  }
+});
+
+
+app.get('/api/winners', async (req, res) => {
+  try {
+    // Reference to Winners collection
+    const winnersRef = realtimeDatabase.ref('Winners');
+    
+    // Get all data from Winners node
+    const snapshot = await winnersRef.once('value');
+    const winnersData = snapshot.val();
+    
+    // If no data exists
+    if (!winnersData) {
+      return res.status(404).json({
+        success: false,
+        error: 'No winners data found'
+      });
+    }
+    
+    // Transform data into a more organized structure
+    const formattedData = {};
+    
+    // Iterate through exam titles
+    Object.entries(winnersData).forEach(([examTitle, examData]) => {
+      formattedData[examTitle] = [];
+      
+      // Iterate through registrations under each exam
+      Object.entries(examData).forEach(([regNumber, winnerDetails]) => {
+        formattedData[examTitle].push({
+          registrationNumber: regNumber,
+          ...winnerDetails
+        });
+      });
+      
+      // Sort winners by rank for each exam
+      formattedData[examTitle].sort((a, b) => a.rank - b.rank);
+    });
+    
+    // Prepare response
+    const response = {
+      success: true,
+      data: {
+        message: 'Winners data retrieved successfully',
+        winners: formattedData
+      }
+    };
+    
+    res.status(200).json(response);
+    
+  } catch (error) {
+    console.error('Error retrieving winners data:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to retrieve winners data',
+      details: error.message
+    });
+  }
+});
+
 
 
 
