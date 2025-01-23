@@ -6,6 +6,7 @@ const Razorpay = require("razorpay");
 const axios = require('axios');
 const crypto = require('node:crypto');
 const moment = require("moment")
+const sharp = require('sharp');
 
 
 // Initialize Express app
@@ -185,6 +186,22 @@ app.get("/api/exams", async (req, res) => {
 // Backend API (Node.js)
 app.post('/api/register', upload.single('photo'), async (req, res) => {
   try {
+    // Validate all required fields
+    const requiredFields = [
+      'candidateName', 'gender', 'dob', 'district', 
+      'pincode', 'state', 'phone', 'exam', 
+      'examDate', 'examStartTime', 'examEndTime'
+    ];
+
+    // Check for missing fields
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+    if (missingFields.length > 0) {
+      return res.status(400).json({
+        success: false,
+        error: `Missing required fields: ${missingFields.join(', ')}`
+      });
+    }
+
     // Validate photo
     if (!req.file) {
       return res.status(400).json({
@@ -193,14 +210,25 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
       });
     }
 
+    // Process image with Sharp
+    const processedImage = await sharp(req.file.buffer)
+      .resize({
+        width: 300,   // Resize to a standard width
+        height: 400,  // Maintain aspect ratio
+        fit: 'cover'  // Crop to fit
+      })
+      .toFormat('jpeg')  // Standardize to JPEG
+      .jpeg({ quality: 80 })  // Compress with 80% quality
+      .toBuffer();
+
     // Generate unique registration number
     const uniqueRegisterNo = `REG${Date.now()}`;
 
-    // Convert photo to base64
-    const base64Image = req.file.buffer.toString('base64');
-    const photoUrl = `data:${req.file.mimetype};base64,${base64Image}`;
+    // Convert processed photo to base64
+    const base64Image = processedImage.toString('base64');
+    const photoUrl = `data:image/jpeg;base64,${base64Image}`;
 
-    // Prepare candidate data
+    // Prepare full candidate data
     const candidateData = {
       candidateName: req.body.candidateName,
       gender: req.body.gender,
@@ -213,12 +241,22 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
       exam: req.body.exam,
       examDate: req.body.examDate,
       examStartTime: req.body.examStartTime,
-      examEndTime: req.body.examEndTime, // Added exam end time
+      examEndTime: req.body.examEndTime,
       photoUrl,
       registrationNumber: uniqueRegisterNo,
+      photoSize: processedImage.length,
       createdAt: new Date().toISOString(),
       used: false
     };
+
+    // Firestore document size limit is ~1MB
+    // Check image size before saving
+    if (processedImage.length > 1 * 1024 * 1024) {
+      return res.status(400).json({
+        success: false,
+        error: 'Processed image still too large'
+      });
+    }
 
     // Save to Firestore
     const candidateRef = firestore.collection('candidates').doc(uniqueRegisterNo);
@@ -236,8 +274,6 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
 
   } catch (error) {
     console.error('Registration error:', error);
-    
-    // Send error response
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to register candidate'
