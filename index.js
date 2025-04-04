@@ -7,6 +7,7 @@ const axios = require('axios');
 const crypto = require('node:crypto');
 const moment = require("moment")
 const sharp = require('sharp');
+const { v4: uuidv4 } = require('uuid');
 
 
 // Initialize Express app
@@ -21,6 +22,7 @@ app.use(cors());
 // Firestore setup
 const firestore = admin.firestore();
 const realtimeDatabase = admin.database();
+const bucket = admin.storage().bucket();
 
 // Multer setup for image upload
 const upload = multer({
@@ -1598,6 +1600,1066 @@ app.get('/api/winners', async (req, res) => {
   }
 });
 
+
+
+//Ptactice test apis
+
+const practiceTestsRef = realtimeDatabase.ref('PracticeTests');
+
+app.get("/api/practice-tests", async (req, res) => {
+  try {
+    const snapshot = await practiceTestsRef.once('value');
+    const practiceTests = {};
+
+    snapshot.forEach((categorySnapshot) => {
+      const category = categorySnapshot.key;
+      practiceTests[category] = {};
+
+      categorySnapshot.forEach((titleSnapshot) => {
+        practiceTests[category][titleSnapshot.key] = titleSnapshot.val();
+      });
+    });
+
+    res.json(practiceTests);
+  } catch (error) {
+    console.error("Error fetching practice tests:", error);
+    res.status(500).json({ error: "Failed to fetch practice tests" });
+  }
+});
+
+
+app.get("/api/practice-tests/:category", async (req, res) => {
+  try {
+    const { category } = req.params;
+    const categoryRef = practiceTestsRef.child(category);
+
+    const snapshot = await categoryRef.once('value');
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({ error: "Category not found" });
+    }
+
+    res.json(snapshot.val());
+  } catch (error) {
+    console.error("Error fetching category practice tests:", error);
+    res.status(500).json({ error: "Failed to fetch category practice tests" });
+  }
+});
+
+
+//Razorpay apis 
+// Create Razorpay Order API
+app.post("/api/create-order", async (req, res) => {
+  try {
+    const { amount, currency = "INR", notes } = req.body;
+
+    if (!amount || isNaN(amount)) {
+      return res.status(400).json({ 
+        success: false, 
+        error: "Invalid amount" 
+      });
+    }
+
+    // Create Razorpay order
+    const options = {
+      amount: Math.round(amount * 100), // amount in paisa
+      currency,
+      receipt: `rcpt_${Date.now()}`,
+      notes: notes || {},
+      payment_capture: 1 // Auto capture payment
+    };
+
+    const order = await razorpay.orders.create(options);
+
+    res.status(201).json({
+      success: true,
+      order: {
+        id: order.id,
+        amount: order.amount,
+        currency: order.currency,
+        receipt: order.receipt
+      }
+    });
+  } catch (error) {
+    console.error("Error creating payment order:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: "Payment order creation failed" 
+    });
+  }
+});
+
+// Verify Payment API
+app.post("/api/verify-payment", async (req, res) => {
+  try {
+    const { orderId, paymentId, signature } = req.body;
+
+    // Validate required parameters
+    if (!orderId || !paymentId || !signature) {
+      return res.status(400).json({
+        success: false,
+        error: "Missing required parameters",
+        required: ['orderId', 'paymentId', 'signature']
+      });
+    }
+
+    // Create signature verification data
+    const text = orderId + "|" + paymentId;
+    
+    // Verify signature
+    const generated_signature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(text)
+      .digest("hex");
+
+    // Compare signatures
+    if (generated_signature !== signature) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid payment signature"
+      });
+    }
+
+    // Fetch payment details
+    const payment = await razorpay.payments.fetch(paymentId);
+    const order = await razorpay.orders.fetch(orderId);
+
+    // Additional verification checks
+    if (payment.order_id !== orderId) {
+      return res.status(400).json({
+        success: false,
+        error: "Payment order ID mismatch"
+      });
+    }
+
+    if (payment.amount !== order.amount) {
+      return res.status(400).json({
+        success: false,
+        error: "Payment amount mismatch"
+      });
+    }
+
+    // Verify payment status
+    if (payment.status !== 'captured') {
+      return res.status(400).json({
+        success: false,
+        error: "Payment not captured",
+        status: payment.status
+      });
+    }
+
+    // Success response
+    return res.json({
+      success: true,
+      payment: {
+        orderId,
+        paymentId,
+        amount: payment.amount / 100,
+        status: payment.status,
+        method: payment.method,
+        email: payment.email,
+        contact: payment.contact,
+        createdAt: payment.created_at
+      }
+    });
+
+  } catch (error) {
+    console.error("Payment verification error:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Payment verification failed",
+      details: error.message
+    });
+  }
+});
+
+// Save Exam Registration API
+// Verify Student ID
+// Verify Student Endpoint
+app.get("/api/verify-student/:studentId", async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    
+    // Search in practicetestpurchasedstudents collection for student details
+    const studentSnapshot = await realtimeDatabase
+      .ref('practicetestpurchasedstudents')
+      .orderByChild('studentId')
+      .equalTo(studentId)
+      .once('value');
+    
+    const studentData = studentSnapshot.val();
+    
+    if (studentData) {
+      // Return first matching student data
+      const studentKey = Object.keys(studentData)[0];
+      res.json({
+        exists: true,
+        studentDetails: studentData[studentKey]
+      });
+    } else {
+      res.json({
+        exists: false,
+        message: 'Student not found'
+      });
+    }
+  } catch (error) {
+    console.error("Student verification error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to verify student"
+    });
+  }
+});
+
+// Check Exam Purchase Validity
+app.get("/api/check-exam-purchase", async (req, res) => {
+  try {
+    const { studentId, examId } = req.query;
+    
+    // Search in practicetestpurchasedstudents collection
+    const studentSnapshot = await realtimeDatabase
+      .ref('practicetestpurchasedstudents')
+      .orderByChild('studentId')
+      .equalTo(studentId)
+      .once('value');
+    
+    const studentData = studentSnapshot.val();
+    
+    if (studentData) {
+      const studentKey = Object.keys(studentData)[0];
+      const student = studentData[studentKey];
+      
+      // Check if student has purchases
+      const purchases = student.purchases || [];
+      
+      const hasActivePurchase = purchases.some(purchase => {
+        // Check exam ID and purchase date (within duration specified in exam details)
+        const purchaseDate = new Date(purchase.purchaseDate);
+        const examDuration = purchase.examDetails.duration || 1; // default to 1 day if not specified
+        
+        const expirationDate = new Date(purchaseDate);
+        expirationDate.setDate(expirationDate.getDate() + examDuration);
+        
+        const currentDate = new Date();
+        
+        return purchase.examDetails.id === examId && 
+               currentDate <= expirationDate;
+      });
+      
+      res.json({ 
+        purchased: hasActivePurchase 
+      });
+    } else {
+      res.json({ 
+        purchased: false 
+      });
+    }
+  } catch (error) {
+    console.error("Exam purchase check error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to check exam purchase"
+    });
+  }
+});
+
+
+// Register New Student or Save Student Exam Details
+app.post("/api/register-student", async (req, res) => {
+  try {
+    const { 
+      name, 
+      age, 
+      gender, 
+      phoneNo, 
+      email, 
+      district, 
+      state,
+      examDetails // Optional exam details
+    } = req.body;
+
+    // Generate a unique student ID
+    const studentId = `STD-${Date.now()}`;
+
+    // Prepare student details
+    const studentData = {
+      studentId,
+      name,
+      age,
+      gender,
+      phoneNo,
+      email,
+      district,
+      state,
+      registrationDate: new Date().toISOString(),
+      purchases: [] // Initialize empty purchases array
+    };
+
+    // Add exam details to purchases if provided
+    if (examDetails) {
+      studentData.purchases.push({
+        examDetails,
+        purchaseDate: new Date().toISOString()
+      });
+    }
+
+    // Save to Firebase Realtime Database in practicetestpurchasedstudents collection
+    const registrationRef = realtimeDatabase.ref('practicetestpurchasedstudents').push();
+    await registrationRef.set(studentData);
+
+    res.status(201).json({
+      success: true,
+      message: 'Student registered successfully',
+      studentId: studentId
+    });
+
+  } catch (error) {
+    console.error("Student registration error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to register student",
+      details: error.message
+    });
+  }
+});
+
+// Save Exam Purchase
+app.post("/api/save-exam-purchase", async (req, res) => {
+  try {
+    const { 
+      studentId, 
+      examDetails, 
+      paymentDetails 
+    } = req.body;
+
+    // Find the student
+    const studentSnapshot = await realtimeDatabase
+      .ref('practicetestpurchasedstudents')
+      .orderByChild('studentId')
+      .equalTo(studentId)
+      .once('value');
+    
+    const studentData = studentSnapshot.val();
+    
+    if (!studentData) {
+      return res.status(404).json({
+        success: false,
+        error: "Student not found"
+      });
+    }
+
+    // Get the student key
+    const studentKey = Object.keys(studentData)[0];
+    const student = studentData[studentKey];
+
+    // Prepare new purchase
+    const newPurchase = {
+      examDetails,
+      paymentDetails,
+      purchaseDate: new Date().toISOString()
+    };
+
+    // Add purchase to student's purchases
+    if (!student.purchases) {
+      student.purchases = [];
+    }
+    student.purchases.push(newPurchase);
+
+    // Update the student record
+    await realtimeDatabase
+      .ref(`practicetestpurchasedstudents/${studentKey}`)
+      .set(student);
+
+    res.status(201).json({
+      success: true,
+      message: 'Exam purchase saved successfully',
+      purchaseId: student.purchases.length - 1 // Index of the new purchase
+    });
+
+  } catch (error) {
+    console.error("Exam purchase save error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to save exam purchase",
+      details: error.message
+    });
+  }
+});
+
+
+
+// Update Student Details API Endpoint
+app.put("/api/update-student/:studentId", async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const {
+      name,
+      age,
+      gender,
+      phoneNo,
+      email,
+      district,
+      state,
+      examDetails // Optional exam details
+    } = req.body;
+
+    // Find the student
+    const studentSnapshot = await realtimeDatabase
+      .ref('practicetestpurchasedstudents')
+      .orderByChild('studentId')
+      .equalTo(studentId)
+      .once('value');
+        
+    const studentData = studentSnapshot.val();
+        
+    if (!studentData) {
+      return res.status(404).json({
+        success: false,
+        error: "Student not found"
+      });
+    }
+
+    // Get the student key
+    const studentKey = Object.keys(studentData)[0];
+    const student = studentData[studentKey];
+
+    // Update student details
+    const updatedStudentData = {
+      ...student,
+      name: name || student.name,
+      age: age || student.age,
+      gender: gender || student.gender,
+      phoneNo: phoneNo || student.phoneNo,
+      email: email || student.email,
+      district: district || student.district,
+      state: state || student.state,
+      lastUpdated: new Date().toISOString()
+    };
+
+    // Add exam details to purchases if provided
+    if (examDetails) {
+      if (!updatedStudentData.purchases) {
+        updatedStudentData.purchases = [];
+      }
+      updatedStudentData.purchases.push({
+        examDetails,
+        purchaseDate: new Date().toISOString()
+      });
+    }
+
+    // Update the student record
+    await realtimeDatabase
+      .ref(`practicetestpurchasedstudents/${studentKey}`)
+      .set(updatedStudentData);
+
+    res.status(200).json({
+      success: true,
+      message: 'Student details updated successfully',
+      studentId: studentId
+    });
+  } catch (error) {
+    console.error("Student update error:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to update student details",
+      details: error.message
+    });
+  }
+});
+
+
+//Api for practice questions 
+// API endpoint to fetch practice exam questions
+
+app.get("/api/practice-tests/:category/:examId/questions", async (req, res) => {
+  const { category, examId } = req.params;
+
+  try {
+    // Firestore references
+    const questionsCollection = firestore.collection("PracticeTests").doc(category)
+      .collection("Exams").doc(examId)
+      .collection("Questions");
+
+    // Get all questions ordered by the 'order' field
+    const questionsSnapshot = await questionsCollection.orderBy("order", "asc").get();
+
+    if (questionsSnapshot.empty) {
+      return res.status(200).json({ questions: [] });
+    }
+
+    // Transform the snapshot to an array of questions
+    const questions = [];
+    questionsSnapshot.forEach((doc) => {
+      const questionData = doc.data();
+      questions.push({
+        id: doc.id,
+        question: questionData.question,
+        options: questionData.options,
+        correctAnswer: questionData.correctAnswer,
+        imageUrl: questionData.imageUrl || null,
+        order: questionData.order
+      });
+    });
+
+    // Return the questions
+    res.status(200).json({ questions });
+  } catch (error) {
+    console.error("Error fetching questions:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+// POST API to store exam analytics
+app.post("/submit-exam-result", async (req, res) => {
+  try {
+    const { studentId, examDetails, purchaseDate, correctAnswers, wrongAnswers } = req.body;
+    
+    if (!studentId || !examDetails) {
+      return res.status(400).json({ error: "Missing required fields" });
+    }
+    
+    // Reference to 'practicetestpurchasedstudents' collection
+    const studentsRef = realtimeDatabase.ref("practicetestpurchasedstudents");
+    
+    // Fetch all users to find matching studentId
+    const snapshot = await studentsRef.once("value");
+    let userKey = null;
+    
+    snapshot.forEach((childSnapshot) => {
+      const userData = childSnapshot.val();
+      if (userData.studentId === studentId) {
+        userKey = childSnapshot.key;
+      }
+    });
+    
+    if (!userKey) {
+      return res.status(404).json({ error: "Student ID not found in database" });
+    }
+    
+    // Format date and time for storing exam results
+    const currentDate = new Date();
+    const formattedDate = `${currentDate.getDate()}-${currentDate.getMonth() + 1}-${currentDate.getFullYear()}`;
+    const formattedTime = `${currentDate.getHours()}:${currentDate.getMinutes()}`;
+    
+    // Generate a unique key for this attempt using timestamp
+    const attemptId = `attempt-${Date.now()}`;
+    
+    // Reference directly to the exam title under ExamAnalytics, avoiding nested date structure
+    const examRef = studentsRef.child(`${userKey}/ExamAnalytics/${examDetails.title}/${attemptId}`);
+    
+    // Store exam result with date as a field, not as path components
+    await examRef.set({
+      date: formattedDate,
+      time: formattedTime,
+      correctAnswers,
+      wrongAnswers,
+      purchaseDate,
+    });
+    
+    return res.status(200).json({ message: "Exam result stored successfully" });
+  } catch (error) {
+    console.error("Error storing exam result:", error);
+    return res.status(500).json({ error: "Internal Server Error" });
+  }
+});
+
+
+
+
+//Pdf Syllabus realted apis
+
+// Get all PDF syllabi
+const pdfSyllabusRef = realtimeDatabase.ref('pdfsyllabi');
+
+
+app.get("/api/pdf-syllabi", async (req, res) => {
+  try {
+    const snapshot = await pdfSyllabusRef.once('value');
+    const syllabi = {};
+    
+    snapshot.forEach((categorySnapshot) => {
+      categorySnapshot.forEach((syllabusSnapshot) => {
+        const syllabusData = syllabusSnapshot.val();
+        const category = syllabusData.category;
+        
+        if (!syllabi[category]) {
+          syllabi[category] = {};
+        }
+        
+        syllabi[category][syllabusData.title] = syllabusData;
+      });
+    });
+    
+    res.json(syllabi);
+  } catch (error) {
+    console.error("Error fetching PDF syllabi:", error);
+    res.status(500).json({ error: "Failed to fetch PDF syllabi" });
+  }
+});
+
+// Get PDF syllabi by category
+app.get("/api/pdf-syllabi/category/:category", async (req, res) => {
+  try {
+    const { category } = req.params;
+    const sanitizedCategory = sanitizeFilename(category);
+    
+    const snapshot = await pdfSyllabusRef.child(sanitizedCategory).once('value');
+    const syllabi = {};
+    
+    snapshot.forEach((syllabusSnapshot) => {
+      const syllabusData = syllabusSnapshot.val();
+      syllabi[syllabusData.title] = syllabusData;
+    });
+    
+    res.json(syllabi);
+  } catch (error) {
+    console.error("Error fetching PDF syllabi by category:", error);
+    res.status(500).json({ error: "Failed to fetch PDF syllabi by category" });
+  }
+});
+
+
+//Pdf user purchase
+// Reference to database collections
+// Define the new database references
+const pdfSyllabusPurchasersRef = realtimeDatabase.ref('pdfsyllabuspurchasers');
+
+// 1. Verify student
+app.get('/api/pdf-verify-student/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    
+    const studentSnapshot = await pdfSyllabusPurchasersRef.child(studentId).once('value');
+    const studentData = studentSnapshot.val();
+    
+    if (studentData) {
+      return res.json({
+        exists: true,
+        studentDetails: {
+          studentId,
+          ...studentData
+        }
+      });
+    } else {
+      return res.json({
+        exists: false
+      });
+    }
+  } catch (error) {
+    console.error('Error verifying pdf student:', error);
+    return res.status(500).json({
+      error: 'Failed to verify pdf student ID',
+      message: error.message
+    });
+  }
+});
+
+// 2. Register new student
+app.post('/api/pdf-register-student', async (req, res) => {
+  try {
+    const studentData = req.body;
+    
+    // Generate a random 6-digit student ID
+    let studentId;
+    let isUnique = false;
+    
+    while (!isUnique) {
+      // Generate a random 6-digit number
+      studentId = Math.floor(100000 + Math.random() * 900000).toString();
+      
+      // Check if this ID already exists
+      const existingStudent = await pdfSyllabusPurchasersRef.child(studentId).once('value');
+      if (!existingStudent.exists()) {
+        isUnique = true;
+      }
+    }
+    
+    // Save student data to Firebase
+    await pdfSyllabusPurchasersRef.child(studentId).set({
+      name: studentData.name,
+      age: studentData.age,
+      gender: studentData.gender,
+      phoneNo: studentData.phoneNo,
+      email: studentData.email || null,
+      district: studentData.district,
+      state: studentData.state,
+      createdAt: admin.database.ServerValue.TIMESTAMP
+    });
+    
+    return res.json({
+      success: true,
+      message: 'PDF student registered successfully',
+      studentId: studentId
+    });
+  } catch (error) {
+    console.error('Error registering pdf student:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to register pdf student',
+      message: error.message
+    });
+  }
+});
+
+// 3. Update existing student details
+app.put('/api/pdf-update-student/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const updatedData = req.body;
+    
+    // Check if student exists
+    const studentSnapshot = await pdfSyllabusPurchasersRef.child(studentId).once('value');
+    
+    if (!studentSnapshot.exists()) {
+      return res.status(404).json({
+        success: false,
+        error: 'PDF student not found'
+      });
+    }
+    
+    // Update the student data
+    await pdfSyllabusPurchasersRef.child(studentId).update({
+      name: updatedData.name,
+      age: updatedData.age,
+      gender: updatedData.gender,
+      phoneNo: updatedData.phoneNo,
+      email: updatedData.email || null,
+      district: updatedData.district,
+      state: updatedData.state,
+      updatedAt: admin.database.ServerValue.TIMESTAMP
+    });
+    
+    // Get the updated student data
+    const updatedStudentSnapshot = await pdfSyllabusPurchasersRef.child(studentId).once('value');
+    
+    return res.json({
+      success: true,
+      message: 'PDF student details updated successfully',
+      studentDetails: {
+        studentId,
+        ...updatedStudentSnapshot.val()
+      }
+    });
+  } catch (error) {
+    console.error('Error updating pdf student:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to update pdf student details',
+      message: error.message
+    });
+  }
+});
+
+// 4. Create a new order for PDF purchase
+app.post('/api/create-pdf-order', async (req, res) => {
+  try {
+    const { amount, notes } = req.body;
+    
+    const options = {
+      amount: Math.round(amount * 100), // Amount in paise
+      currency: 'INR',
+      receipt: `pdf_receipt_${Date.now()}`,
+      notes
+    };
+    
+    const order = await razorpay.orders.create(options);
+    
+    // No longer storing order in a separate collection
+    
+    return res.json({
+      success: true,
+      order
+    });
+  } catch (error) {
+    console.error('Error creating pdf order:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to create pdf payment order',
+      message: error.message
+    });
+  }
+});
+
+// 5. Verify payment after Razorpay callback
+app.post('/api/verify-pdf-payment', async (req, res) => {
+  try {
+    const {
+      orderId,
+      paymentId,
+      signature,
+      syllabusId,
+      filePath,
+      userId
+    } = req.body;
+    
+    // Verify signature
+    const generatedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${orderId}|${paymentId}`)
+      .digest('hex');
+    
+    if (generatedSignature !== signature) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid pdf payment signature'
+      });
+    }
+    
+    // No longer updating order status in a separate collection
+    
+    // Payment is valid
+    return res.json({
+      success: true,
+      message: 'PDF payment verified successfully',
+      paymentId,
+      syllabusId,
+      userId
+    });
+  } catch (error) {
+    console.error('Error verifying pdf payment:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to verify pdf payment',
+      message: error.message
+    });
+  }
+});
+
+// 6. Save syllabus purchase details - UPDATED to use the new structure
+app.post('/api/pdf-save-syllabus-purchase', async (req, res) => {
+  try {
+    const {
+      studentId,
+      syllabusDetails,
+      paymentDetails,
+      purchaseDate
+    } = req.body;
+    
+    const purchaseId = uuidv4();
+    
+    // Create purchase record
+    const purchaseData = {
+      purchaseId: purchaseId,
+      syllabusId: syllabusDetails.id,
+      syllabusTitle: syllabusDetails.title,
+      syllabusCategory: syllabusDetails.category,
+      syllabusPrice: syllabusDetails.price,
+      syllabusDuration: syllabusDetails.duration,
+      syllabusDescription: syllabusDetails.description || '',
+      syllabusFilePath: syllabusDetails.filePath || `syllabi/${syllabusDetails.id}.pdf`,
+      paymentStatus: paymentDetails.status,
+      paymentAmount: paymentDetails.amount,
+      paymentId: paymentDetails.paymentId || null,
+      orderId: paymentDetails.orderId || null,
+      purchaseDate: purchaseDate,
+      expirationDate: syllabusDetails.expirationDate,
+      createdAt: admin.database.ServerValue.TIMESTAMP
+    };
+    
+    // Save to Firebase under the student's purchases subcollection
+    await pdfSyllabusPurchasersRef.child(studentId).child('purchases').child(purchaseId).set(purchaseData);
+    
+    return res.json({
+      success: true,
+      message: 'PDF syllabus purchase saved successfully',
+      purchaseId: purchaseId
+    });
+  } catch (error) {
+    console.error('Error saving pdf purchase:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to save pdf syllabus purchase',
+      message: error.message
+    });
+  }
+});
+
+// 7. Get student's purchased syllabi - UPDATED to use the new structure
+app.get('/api/pdf-student-purchases/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    
+    const purchasesSnapshot = await pdfSyllabusPurchasersRef.child(studentId).child('purchases').once('value');
+    const purchases = purchasesSnapshot.val() || {};
+    
+    return res.json({
+      success: true,
+      purchases: Object.values(purchases)
+    });
+  } catch (error) {
+    console.error('Error fetching pdf student purchases:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to fetch pdf student purchases',
+      message: error.message
+    });
+  }
+});
+
+
+
+
+//Pdf syllabus show apis
+
+// Function to check if a purchase is expired
+const isPurchaseExpired = (purchase) => {
+  const expirationDate = new Date(purchase.expirationDate);
+  const currentDate = new Date();
+  return currentDate > expirationDate;
+};
+
+// Get remaining time in days for a purchase
+const getRemainingDays = (purchase) => {
+  const expirationDate = new Date(purchase.expirationDate);
+  const currentDate = new Date();
+  const timeDiff = expirationDate - currentDate;
+  const daysDiff = Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
+  return daysDiff > 0 ? daysDiff : 0;
+};
+
+// Endpoint to verify student and get active syllabus purchases
+app.get('/verify-student-syllabus/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    
+    // Get student data from Firebase Realtime Database
+    const studentRef = realtimeDatabase.ref(`pdfsyllabuspurchasers/${studentId}`);
+    const snapshot = await studentRef.once('value');
+    const studentData = snapshot.val();
+    
+    if (!studentData) {
+      return res.status(404).json({ exists: false, message: 'Student not found' });
+    }
+    
+    // Extract purchases and filter active ones
+    const allPurchases = studentData.purchases || {};
+    const purchasesArray = Object.values(allPurchases);
+    
+    // Filter active purchases (not expired)
+    const activePurchases = purchasesArray.filter(purchase => !isPurchaseExpired(purchase));
+    
+    // Add remaining days to each purchase
+    const purchasesWithRemainingDays = activePurchases.map(purchase => ({
+      ...purchase,
+      remainingDays: getRemainingDays(purchase)
+    }));
+    
+    // Return student details with active purchases
+    return res.status(200).json({
+      exists: true,
+      studentDetails: {
+        name: studentData.name,
+        id: studentId,
+        activeSyllabuses: purchasesWithRemainingDays
+      }
+    });
+  } catch (error) {
+    console.error('Error verifying student syllabus:', error);
+    return res.status(500).json({ 
+      message: 'An error occurred while verifying student syllabus',
+      error: error.message 
+    });
+  }
+});
+
+// Endpoint to get signed URL for syllabus PDF
+app.get('/get-syllabus-url/:filePath', async (req, res) => {
+  try {
+    const { filePath } = req.params;
+    console.log('Requested file path:', filePath);
+
+    // Decode the URL parameter to handle special characters correctly
+    const decodedFilePath = decodeURIComponent(filePath);
+    
+    // Ensure path is correctly formatted
+    const fullPath = decodedFilePath.startsWith('pdfsyllabi/') 
+      ? decodedFilePath 
+      : `pdfsyllabi/${decodedFilePath}`;
+
+    console.log('Accessing file at path:', fullPath);
+    
+    const file = bucket.file(fullPath);
+    const [exists] = await file.exists();
+
+    if (!exists) {
+      console.error(`File not found: ${fullPath}`);
+      return res.status(404).json({ 
+        message: 'PDF file not found in storage'
+      });
+    }
+
+    // Generate a signed URL with the correct CORS headers
+    const [signedUrl] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 60 * 60 * 1000, // 1 hour
+      responseDisposition: 'inline',
+      responseType: 'application/pdf',
+      version: 'v4'
+    });
+
+    return res.status(200).json({ 
+      signedUrl,
+      fileName: decodedFilePath.split('/').pop()
+    });
+  } catch (error) {
+    console.error('Error generating syllabus URL:', error);
+    return res.status(500).json({
+      message: 'An error occurred while getting syllabus URL',
+      error: error.message
+    });
+  }
+});
+
+
+// Add this endpoint to your Express backend
+app.get('/proxy-pdf/:filePath', async (req, res) => {
+  try {
+    const { filePath } = req.params;
+    console.log('Proxying PDF for path:', filePath);
+    
+    // Decode the URL parameter
+    const decodedFilePath = decodeURIComponent(filePath);
+    
+    // Ensure path is correctly formatted
+    const fullPath = decodedFilePath.startsWith('pdfsyllabi/') 
+      ? decodedFilePath 
+      : `pdfsyllabi/${decodedFilePath}`;
+    
+    console.log('Accessing file at path:', fullPath);
+    
+    const file = bucket.file(fullPath);
+    const [exists] = await file.exists();
+
+    if (!exists) {
+      console.error(`File not found: ${fullPath}`);
+      return res.status(404).send('PDF file not found');
+    }
+    
+    // Set headers for PDF
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${fullPath.split('/').pop()}"`);
+    
+    // Stream the file directly to the response
+    const readStream = file.createReadStream();
+    
+    // Handle stream errors
+    readStream.on('error', (error) => {
+      console.error('Error streaming PDF:', error);
+      // Only send error if headers haven't been sent yet
+      if (!res.headersSent) {
+        res.status(500).send('Error streaming PDF file');
+      }
+    });
+    
+    // Pipe the file to the response
+    readStream.pipe(res);
+    
+  } catch (error) {
+    console.error('Error proxying PDF:', error);
+    return res.status(500).send('An error occurred while getting PDF');
+  }
+});
 
 
 
