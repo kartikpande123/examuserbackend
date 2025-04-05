@@ -17,7 +17,7 @@ const port = 2025;
 // Middleware
 app.use(express.json());
 app.use(cors({
-  origin: ['https://arnprivateexamconduct.in'],
+  origin: ['https://arnprivateexamconduct.in', "https://localhost:3000"],
   methods: ["GET", "POST", "DELETE", "PUT"],
   credentials: true
 }));
