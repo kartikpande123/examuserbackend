@@ -2670,6 +2670,50 @@ app.get('/proxy-pdf/:filePath', async (req, res) => {
 
 
 
+//cors test apis
+
+
+app.use((req, res, next) => {
+  // Allow requests from any origin
+  res.header('Access-Control-Allow-Origin', '*');
+  // Or to be more specific, allow only your frontend origin:
+  // res.header('Access-Control-Allow-Origin', 'http://localhost:3000');
+  
+  // Allow specific HTTP methods
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  
+  // Allow specific headers
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  
+  // Handle preflight requests
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
+
+app.get('/test-cors', (req, res) => {
+  res.header('Content-Type', 'application/json');
+  res.status(200).json({ message: 'CORS is working correctly!' });
+});
+
+// If you want to test a specific student ID endpoint without database logic
+app.get('/test-student/:studentId', (req, res) => {
+  const { studentId } = req.params;
+  res.header('Content-Type', 'application/json');
+  res.status(200).json({ 
+    exists: true, 
+    message: 'Test endpoint working!',
+    studentDetails: {
+      name: 'Test Student',
+      id: studentId,
+      activeSyllabuses: []
+    }
+  });
+});
+
+
 // Start the server
 app.listen(port, () => {
     console.log(`Server started on port ${port}`);
