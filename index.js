@@ -2519,66 +2519,39 @@ const getRemainingDays = (purchase) => {
 };
 
 // Endpoint to verify student and get active syllabus purchases
-app.get('/access-student-materials/:studentId', async (req, res) => {
-  // Set CORS headers to prevent cross-origin issues
-  res.header('Access-Control-Allow-Origin', '*'); // Allow requests from any origin
-  res.header('Access-Control-Allow-Methods', 'GET');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  
+// GET API to fetch user's PDF syllabus purchase by studentId
+app.get('/getPurchase/:studentId', async (req, res) => {
+  const studentId = req.params.studentId;
+
   try {
-    const { studentId } = req.params;
-    
-    // Get student data from Firebase Realtime Database
-    const studentRef = realtimeDatabase.ref(`pdfsyllabuspurchasers/${studentId}`);
-    const snapshot = await studentRef.once('value');
-    const studentData = snapshot.val();
-    
-    if (!studentData) {
-      return res.status(404).json({ exists: false, message: 'Student not found' });
+    const ref = realtimeDatabase.ref('pdfsyllabuspurchasers');
+    const snapshot = await ref.once('value');
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({ message: 'No data found' });
     }
-    
-    // Extract purchases and filter active ones
-    const allPurchases = studentData.purchases || {};
-    const purchasesArray = Object.values(allPurchases);
-    
-    // Filter active purchases (not expired)
-    const activePurchases = purchasesArray.filter(purchase => !isPurchaseExpired(purchase));
-    
-    // Add remaining days to each purchase
-    const purchasesWithRemainingDays = activePurchases.map(purchase => ({
+
+    const allData = snapshot.val();
+    const matchingData = Object.values(allData).filter(item => item.studentId === studentId);
+
+    if (matchingData.length === 0) {
+      return res.status(404).json({ message: 'No matching user found' });
+    }
+
+    const responseData = matchingData.map(purchase => ({
       ...purchase,
-      remainingDays: getRemainingDays(purchase)
+      remainingDays: getRemainingDays(purchase),
     }));
-    
-    // Return student details with active purchases
-    return res.status(200).json({
-      exists: true,
-      studentDetails: {
-        name: studentData.name,
-        id: studentId,
-        activeSyllabuses: purchasesWithRemainingDays
-      }
-    });
+
+    res.status(200).json(responseData);
   } catch (error) {
-    console.error('Error accessing student materials:', error);
-    return res.status(500).json({
-      message: 'An error occurred while accessing student materials',
-      error: error.message
-    });
+    console.error('Error fetching data:', error);
+    res.status(500).json({ message: 'Internal server error', error: error.message });
   }
 });
 
 // Endpoint to get signed URL for syllabus PDF
 app.get('/get-syllabus-url/:filePath', async (req, res) => {
-
-  const origin = req.headers.origin;
-  if (origin && (origin === 'http://localhost:3000' || origin === 'https://youractualproductionsite.com')) {
-    res.header('Access-Control-Allow-Origin', origin);
-  }
-
-  res.header('Access-Control-Allow-Credentials', 'true');
-  res.header('Access-Control-Allow-Methods', 'GET');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   try {
     const { filePath } = req.params;
     console.log('Requested file path:', filePath);
