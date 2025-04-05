@@ -23,7 +23,6 @@ app.use(cors({
 }));
 
 
-
 // Firestore setup
 const firestore = admin.firestore();
 const realtimeDatabase = admin.database();
@@ -2524,34 +2523,47 @@ const getRemainingDays = (purchase) => {
 };
 
 // Endpoint to verify student and get active syllabus purchases
-// GET API to fetch user's PDF syllabus purchase by studentId
-app.get('/getPurchase/:studentId', async (req, res) => {
-  const studentId = req.params.studentId;
-
+app.get('/verify-student-syllabus/:studentId', async (req, res) => {
   try {
-    const ref = realtimeDatabase.ref('pdfsyllabuspurchasers');
-    const snapshot = await ref.once('value');
-
-    if (!snapshot.exists()) {
-      return res.status(404).json({ message: 'No data found' });
+    const { studentId } = req.params;
+    
+    // Get student data from Firebase Realtime Database
+    const studentRef = realtimeDatabase.ref(`pdfsyllabuspurchasers/${studentId}`);
+    const snapshot = await studentRef.once('value');
+    const studentData = snapshot.val();
+    
+    if (!studentData) {
+      return res.status(404).json({ exists: false, message: 'Student not found' });
     }
-
-    const allData = snapshot.val();
-    const matchingData = Object.values(allData).filter(item => item.studentId === studentId);
-
-    if (matchingData.length === 0) {
-      return res.status(404).json({ message: 'No matching user found' });
-    }
-
-    const responseData = matchingData.map(purchase => ({
+    
+    // Extract purchases and filter active ones
+    const allPurchases = studentData.purchases || {};
+    const purchasesArray = Object.values(allPurchases);
+    
+    // Filter active purchases (not expired)
+    const activePurchases = purchasesArray.filter(purchase => !isPurchaseExpired(purchase));
+    
+    // Add remaining days to each purchase
+    const purchasesWithRemainingDays = activePurchases.map(purchase => ({
       ...purchase,
-      remainingDays: getRemainingDays(purchase),
+      remainingDays: getRemainingDays(purchase)
     }));
-
-    res.status(200).json(responseData);
+    
+    // Return student details with active purchases
+    return res.status(200).json({
+      exists: true,
+      studentDetails: {
+        name: studentData.name,
+        id: studentId,
+        activeSyllabuses: purchasesWithRemainingDays
+      }
+    });
   } catch (error) {
-    console.error('Error fetching data:', error);
-    res.status(500).json({ message: 'Internal server error', error: error.message });
+    console.error('Error verifying student syllabus:', error);
+    return res.status(500).json({ 
+      message: 'An error occurred while verifying student syllabus',
+      error: error.message 
+    });
   }
 });
 
