@@ -2570,6 +2570,15 @@ app.get('/access-student-materials/:studentId', async (req, res) => {
 
 // Endpoint to get signed URL for syllabus PDF
 app.get('/get-syllabus-url/:filePath', async (req, res) => {
+
+  const origin = req.headers.origin;
+  if (origin && (origin === 'http://localhost:3000' || origin === 'https://youractualproductionsite.com')) {
+    res.header('Access-Control-Allow-Origin', origin);
+  }
+
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.header('Access-Control-Allow-Methods', 'GET');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   try {
     const { filePath } = req.params;
     console.log('Requested file path:', filePath);
