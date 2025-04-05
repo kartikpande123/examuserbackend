@@ -16,17 +16,14 @@ const port = 2025;
 
 // Middleware
 app.use(express.json());
-app.use(cors());
-app.options('*', cors()); // important for preflight
+app.use(cors({
+  origin: '*', // Allow all origins
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 
-// Handle preflight OPTIONS requests for all routes
-app.options('*', (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3000'); // or dynamic
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  return res.sendStatus(204); // No content
-});
+app.options('*', cors());
 
 // Firestore setup
 const firestore = admin.firestore();
