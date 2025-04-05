@@ -17,9 +17,13 @@ const port = 2025;
 // Middleware
 app.use(express.json());
 app.use(cors({
+  // Allow requests from all origins
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: '*'
+  // If you need to allow credentials (cookies, authorization headers)
+  // origin: 'https://yourappdomain.com', 
+  // credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
 }));
 
 // Firestore setup
