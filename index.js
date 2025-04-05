@@ -16,7 +16,10 @@ const port = 2025;
 
 // Middleware
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+  origin: ['https://arnprivateexamconduct.in', 'http://localhost:3000'],
+  methods: ["GET", "POST", "DELETE", "PUT"]
+}));
 
 
 // Firestore setup
