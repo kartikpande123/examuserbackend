@@ -2519,7 +2519,12 @@ const getRemainingDays = (purchase) => {
 };
 
 // Endpoint to verify student and get active syllabus purchases
-app.get('/verify-student-syllabus/:studentId', async (req, res) => {
+app.get('/access-student-materials/:studentId', async (req, res) => {
+  // Set CORS headers to prevent cross-origin issues
+  res.header('Access-Control-Allow-Origin', '*'); // Allow requests from any origin
+  res.header('Access-Control-Allow-Methods', 'GET');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  
   try {
     const { studentId } = req.params;
     
@@ -2555,10 +2560,10 @@ app.get('/verify-student-syllabus/:studentId', async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('Error verifying student syllabus:', error);
-    return res.status(500).json({ 
-      message: 'An error occurred while verifying student syllabus',
-      error: error.message 
+    console.error('Error accessing student materials:', error);
+    return res.status(500).json({
+      message: 'An error occurred while accessing student materials',
+      error: error.message
     });
   }
 });
