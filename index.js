@@ -16,12 +16,17 @@ const port = 2025;
 
 // Middleware
 app.use(express.json());
-app.use(cors({
-  origin: ['https://arnprivateexamconduct.in', "https://localhost:3000"],
-  methods: ["GET", "POST", "DELETE", "PUT"],
-  credentials: true
-}));
+app.use(cors());
+app.options('*', cors()); // important for preflight
 
+// Handle preflight OPTIONS requests for all routes
+app.options('*', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3000'); // or dynamic
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204); // No content
+});
 
 // Firestore setup
 const firestore = admin.firestore();
