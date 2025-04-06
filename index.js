@@ -2652,15 +2652,20 @@ app.get('/proxy-pdf/:filePath', async (req, res) => {
     // Download the entire file to buffer first
     const [fileBuffer] = await file.download();
     
+    // ADD THIS HERE - Calculate and log the file hash
+    const crypto = require('crypto');
+    const fileHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+    console.log(`File hash for ${fullPath}: ${fileHash}`);
+    
     // IMPORTANT: Clean headers - set them AFTER downloading but BEFORE sending
-    res.removeHeader('X-Powered-By'); // Remove unnecessary headers
-    res.removeHeader('Transfer-Encoding'); // This can cause issues with binary files
+    res.removeHeader('X-Powered-By');
+    res.removeHeader('Transfer-Encoding');
     
     // Set required headers with proper encoding
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Length', fileBuffer.length);
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fullPath.split('/').pop())}"`);
-    res.setHeader('Cache-Control', 'public, max-age=86400'); // Allow caching for 24 hours
+    res.setHeader('Cache-Control', 'public, max-age=86400');
     
     // CORS headers
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -2674,7 +2679,6 @@ app.get('/proxy-pdf/:filePath', async (req, res) => {
     return res.status(500).send('An error occurred while getting PDF');
   }
 });
-
 
 //Fixting alternative apis for pdf purchaser entry
 app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
