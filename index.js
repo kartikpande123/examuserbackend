@@ -2627,33 +2627,55 @@ app.get('/get-syllabus-url/:filePath', async (req, res) => {
 // Add this endpoint to your Express backend
 // Modify your proxy-pdf endpoint to add proper error handling and correct headers
 
+app.use((req, res, next) => {
+  // Allow requests from any origin
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  // Allow these HTTP methods
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS, PUT, PATCH, DELETE');
+  // Allow these headers
+  res.setHeader('Access-Control-Allow-Headers', 'X-Requested-With,content-type,Authorization');
+  // Allow credentials (cookies, authorization headers, etc.)
+  res.setHeader('Access-Control-Allow-Credentials', true);
+  
+  // Handle preflight requests (OPTIONS)
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
+
+// Then your PDF route
 app.get('/proxy-pdf/:filePath', async (req, res) => {
   try {
-    const filePath = req.params.filePath;
+    const filePath = decodeURIComponent(req.params.filePath);
     const file = bucket.file(filePath);
-
+    
     const [exists] = await file.exists();
     if (!exists) {
       return res.status(404).send('File not found');
     }
-
-    // Set headers to indicate binary content (suitable for blob use in frontend)
+    
+    // Set proper headers for PDF and CORS
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.name)}"`);
-    res.setHeader('Content-Transfer-Encoding', 'binary');
-    res.setHeader('Accept-Ranges', 'bytes');
-    res.setHeader('Access-Control-Allow-Origin', '*');
-
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    
     // Create and stream file
     const readStream = file.createReadStream();
-
+    
     readStream.on('error', (err) => {
       console.error('Error streaming file:', err);
-      res.status(500).send('Error streaming file');
+      if (!res.headersSent) {
+        res.status(500).send('Error streaming file');
+      } else {
+        res.end();
+      }
     });
-
+    
     readStream.pipe(res);
-
   } catch (error) {
     console.error('Error in proxy-pdf:', error);
     res.status(500).send('Error retrieving the PDF');
