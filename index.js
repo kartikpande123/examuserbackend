@@ -2635,8 +2635,8 @@ app.get('/proxy-pdf/:filePath', async (req, res) => {
     const decodedFilePath = decodeURIComponent(filePath);
     
     // Ensure path is correctly formatted
-    const fullPath = decodedFilePath.startsWith('pdfsyllabi/') 
-      ? decodedFilePath 
+    const fullPath = decodedFilePath.startsWith('pdfsyllabi/')
+      ? decodedFilePath
       : `pdfsyllabi/${decodedFilePath}`;
     
     console.log('Accessing file at path:', fullPath);
@@ -2649,36 +2649,26 @@ app.get('/proxy-pdf/:filePath', async (req, res) => {
       return res.status(404).send('PDF file not found');
     }
     
-    // IMPORTANT: Set proper headers with correct content type and encoding
+    // Download the entire file to buffer first
+    const [fileBuffer] = await file.download();
+    
+    // IMPORTANT: Clean headers - set them AFTER downloading but BEFORE sending
+    res.removeHeader('X-Powered-By'); // Remove unnecessary headers
+    res.removeHeader('Transfer-Encoding'); // This can cause issues with binary files
+    
+    // Set required headers with proper encoding
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `inline; filename="${fullPath.split('/').pop()}"`);
-    res.setHeader('Cache-Control', 'no-cache');
-    // Add CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*'); 
+    res.setHeader('Content-Length', fileBuffer.length);
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fullPath.split('/').pop())}"`);
+    res.setHeader('Cache-Control', 'public, max-age=86400'); // Allow caching for 24 hours
+    
+    // CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     
-    // Get file metadata to properly set content-length
-    const [metadata] = await file.getMetadata();
-    if (metadata && metadata.size) {
-      res.setHeader('Content-Length', metadata.size);
-    }
-    
-    // Stream the file directly to the response
-    const readStream = file.createReadStream();
-    
-    // Handle stream errors
-    readStream.on('error', (error) => {
-      console.error('Error streaming PDF:', error);
-      // Only send error if headers haven't been sent yet
-      if (!res.headersSent) {
-        res.status(500).send('Error streaming PDF file');
-      }
-    });
-    
-    // Pipe the file to the response
-    readStream.pipe(res);
-    
+    // Send the complete buffer in one go
+    return res.end(fileBuffer);
   } catch (error) {
     console.error('Error proxying PDF:', error);
     return res.status(500).send('An error occurred while getting PDF');
