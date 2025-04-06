@@ -2625,6 +2625,7 @@ app.get('/get-syllabus-url/:filePath', async (req, res) => {
 
 
 // Add this endpoint to your Express backend
+// Modify your proxy-pdf endpoint to add proper error handling and correct headers
 app.get('/proxy-pdf/:filePath', async (req, res) => {
   try {
     const { filePath } = req.params;
@@ -2642,15 +2643,26 @@ app.get('/proxy-pdf/:filePath', async (req, res) => {
     
     const file = bucket.file(fullPath);
     const [exists] = await file.exists();
-
+    
     if (!exists) {
       console.error(`File not found: ${fullPath}`);
       return res.status(404).send('PDF file not found');
     }
     
-    // Set headers for PDF
+    // IMPORTANT: Set proper headers with correct content type and encoding
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${fullPath.split('/').pop()}"`);
+    res.setHeader('Cache-Control', 'no-cache');
+    // Add CORS headers
+    res.setHeader('Access-Control-Allow-Origin', '*'); 
+    res.setHeader('Access-Control-Allow-Methods', 'GET');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    
+    // Get file metadata to properly set content-length
+    const [metadata] = await file.getMetadata();
+    if (metadata && metadata.size) {
+      res.setHeader('Content-Length', metadata.size);
+    }
     
     // Stream the file directly to the response
     const readStream = file.createReadStream();
