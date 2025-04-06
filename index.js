@@ -2637,21 +2637,21 @@ app.get('/proxy-pdf/:filePath', async (req, res) => {
       return res.status(404).send('File not found');
     }
 
-    // Set headers properly
+    // Set headers to indicate binary content (suitable for blob use in frontend)
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.name)}"`);
+    res.setHeader('Content-Transfer-Encoding', 'binary');
+    res.setHeader('Accept-Ranges', 'bytes');
     res.setHeader('Access-Control-Allow-Origin', '*');
 
-    // Stream the PDF file directly to the response
+    // Create and stream file
     const readStream = file.createReadStream();
 
-    // Handle stream errors
     readStream.on('error', (err) => {
       console.error('Error streaming file:', err);
       res.status(500).send('Error streaming file');
     });
 
-    // Pipe the stream to the response
     readStream.pipe(res);
 
   } catch (error) {
@@ -2659,6 +2659,7 @@ app.get('/proxy-pdf/:filePath', async (req, res) => {
     res.status(500).send('Error retrieving the PDF');
   }
 });
+
 
 
 
