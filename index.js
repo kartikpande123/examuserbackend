@@ -2626,59 +2626,41 @@ app.get('/get-syllabus-url/:filePath', async (req, res) => {
 
 // Add this endpoint to your Express backend
 // Modify your proxy-pdf endpoint to add proper error handling and correct headers
+
 app.get('/proxy-pdf/:filePath', async (req, res) => {
   try {
-    const { filePath } = req.params;
-    console.log('Proxying PDF for path:', filePath);
-    
-    // Decode the URL parameter
-    const decodedFilePath = decodeURIComponent(filePath);
-    
-    // Ensure path is correctly formatted
-    const fullPath = decodedFilePath.startsWith('pdfsyllabi/')
-      ? decodedFilePath
-      : `pdfsyllabi/${decodedFilePath}`;
-    
-    console.log('Accessing file at path:', fullPath);
-    
-    const file = bucket.file(fullPath);
+    const filePath = req.params.filePath;
+    const file = bucket.file(filePath);
+
     const [exists] = await file.exists();
-    
     if (!exists) {
-      console.error(`File not found: ${fullPath}`);
-      return res.status(404).send('PDF file not found');
+      return res.status(404).send('File not found');
     }
-    
-    // Download the entire file to buffer first
-    const [fileBuffer] = await file.download();
-    
-    // ADD THIS HERE - Calculate and log the file hash
-    const crypto = require('crypto');
-    const fileHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
-    console.log(`File hash for ${fullPath}: ${fileHash}`);
-    
-    // IMPORTANT: Clean headers - set them AFTER downloading but BEFORE sending
-    res.removeHeader('X-Powered-By');
-    res.removeHeader('Transfer-Encoding');
-    
-    // Set required headers with proper encoding
+
+    // Set headers properly
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Length', fileBuffer.length);
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fullPath.split('/').pop())}"`);
-    res.setHeader('Cache-Control', 'public, max-age=86400');
-    
-    // CORS headers
+    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(file.name)}"`);
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    
-    // Send the complete buffer in one go
-    return res.end(fileBuffer);
+
+    // Stream the PDF file directly to the response
+    const readStream = file.createReadStream();
+
+    // Handle stream errors
+    readStream.on('error', (err) => {
+      console.error('Error streaming file:', err);
+      res.status(500).send('Error streaming file');
+    });
+
+    // Pipe the stream to the response
+    readStream.pipe(res);
+
   } catch (error) {
-    console.error('Error proxying PDF:', error);
-    return res.status(500).send('An error occurred while getting PDF');
+    console.error('Error in proxy-pdf:', error);
+    res.status(500).send('Error retrieving the PDF');
   }
 });
+
+
 
 //Fixting alternative apis for pdf purchaser entry
 app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
