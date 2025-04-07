@@ -2576,44 +2576,48 @@ app.get('/verify-student-syllabus/:studentId', async (req, res) => {
 
 
 // Endpoint to get signed URL for syllabus PDF
+// GET endpoint for retrieving signed URLs for syllabus PDFs
 app.get('/get-syllabus-url/:filePath', async (req, res) => {
   try {
     const { filePath } = req.params;
     console.log('Requested file path:', filePath);
-
+    
     // Decode the URL parameter to handle special characters correctly
     const decodedFilePath = decodeURIComponent(filePath);
     
-    // Ensure path is correctly formatted
-    const fullPath = decodedFilePath.startsWith('pdfsyllabi/') 
-      ? decodedFilePath 
+    // Ensure path is correctly formatted for Firebase Storage
+    const fullPath = decodedFilePath.startsWith('pdfsyllabi/')
+      ? decodedFilePath
       : `pdfsyllabi/${decodedFilePath}`;
-
+    
     console.log('Accessing file at path:', fullPath);
     
-    const file = bucket.file(fullPath);
-    const [exists] = await file.exists();
-
+    // First check if the file exists in Firebase Storage
+    const fileRef = bucket.file(fullPath);
+    const [exists] = await fileRef.exists();
+    
     if (!exists) {
       console.error(`File not found: ${fullPath}`);
-      return res.status(404).json({ 
+      return res.status(404).json({
         message: 'PDF file not found in storage'
       });
     }
-
-    // Generate a signed URL with the correct CORS headers
-    const [signedUrl] = await file.getSignedUrl({
+    
+    // Generate a signed URL with proper headers for PDF viewing
+    const [signedUrl] = await fileRef.getSignedUrl({
       action: 'read',
-      expires: Date.now() + 60 * 60 * 1000, // 1 hour
-      responseDisposition: 'inline',
+      expires: Date.now() + 60 * 60 * 1000, // 1 hour expiration
+      responseDisposition: 'inline', // Display in browser
       responseType: 'application/pdf',
       version: 'v4'
     });
-
-    return res.status(200).json({ 
+    
+    // Return the signed URL and filename to the client
+    return res.status(200).json({
       signedUrl,
       fileName: decodedFilePath.split('/').pop()
     });
+    
   } catch (error) {
     console.error('Error generating syllabus URL:', error);
     return res.status(500).json({
