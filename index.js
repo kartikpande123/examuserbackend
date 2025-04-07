@@ -20,7 +20,7 @@ app.use(cors({
   // Allow requests from all origins
   origin: '*',
   // If you need to allow credentials (cookies, authorization headers)
-  // origin: 'https://yourappdomain.com', 
+  origin: 'https://arnprivateexamconduct.in', 
   // credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
