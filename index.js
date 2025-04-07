@@ -20,7 +20,7 @@ app.use(cors({
   // Allow requests from all origins
   origin: '*',
   // If you need to allow credentials (cookies, authorization headers)
-  origin: 'https://arnprivateexamconduct.in', 
+  // origin: 'https://yourappdomain.com', 
   // credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'Accept']
@@ -2624,66 +2624,6 @@ app.get('/get-syllabus-url/:filePath', async (req, res) => {
 });
 
 
-app.get('/proxy-pdf-content/:filePath', async (req, res) => {
-  try {
-    const { filePath } = req.params;
-    console.log('Proxying PDF content for file path:', filePath);
-    
-    // Decode the URL parameter to handle special characters correctly
-    const decodedFilePath = decodeURIComponent(filePath);
-    
-    // Ensure path is correctly formatted
-    const fullPath = decodedFilePath.startsWith('pdfsyllabi/')
-      ? decodedFilePath
-      : `pdfsyllabi/${decodedFilePath}`;
-    
-    console.log('Accessing file at path:', fullPath);
-    
-    // First get the signed URL
-    const file = bucket.file(fullPath);
-    const [exists] = await file.exists();
-    
-    if (!exists) {
-      console.error(`File not found: ${fullPath}`);
-      return res.status(404).json({
-        message: 'PDF file not found in storage'
-      });
-    }
-    
-    // Generate a signed URL with the correct headers
-    const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 60 * 60 * 1000, // 1 hour
-      responseDisposition: 'inline',
-      responseType: 'application/pdf',
-      version: 'v4'
-    });
-    
-    // Now fetch the content from the signed URL
-    const response = await axios({
-      method: 'get',
-      url: signedUrl,
-      responseType: 'arraybuffer'
-    });
-    
-    // Set appropriate headers for the PDF
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'inline; filename="syllabus.pdf"');
-    res.setHeader('Cache-Control', 'public, max-age=3600'); // Cache for 1 hour
-    
-    // Send the PDF content to the client
-    res.send(response.data);
-    
-  } catch (error) {
-    console.error('Error proxying PDF content:', error);
-    return res.status(500).json({
-      message: 'An error occurred while retrieving the PDF',
-      error: error.message
-    });
-  }
-});
-
-
 // Add this endpoint to your Express backend
 // Modify your proxy-pdf endpoint to add proper error handling and correct headers
 
@@ -2774,37 +2714,146 @@ app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
 
 
 
-app.get('/direct-download/:filePath', async (req, res) => {
+//Testing pdfs
+// Get all PDF syllabus categories
+app.get("/api/pdf-syllabi", async (req, res) => {
   try {
-    const { filePath } = req.params;
-    const decodedFilePath = decodeURIComponent(filePath);
+    const snapshot = await pdfSyllabusRef.once('value');
+    const syllabi = {};
     
-    const fullPath = decodedFilePath.startsWith('pdfsyllabi/')
-      ? decodedFilePath
-      : `pdfsyllabi/${decodedFilePath}`;
-    
-    const file = bucket.file(fullPath);
-    const [exists] = await file.exists();
-    
-    if (!exists) {
-      return res.status(404).send('PDF not found');
-    }
-    
-    // Generate a signed URL for direct download
-    const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 15 * 60 * 1000, // 15 minutes
-      responseDisposition: 'attachment; filename="syllabus.pdf"', 
-      responseType: 'application/pdf',
+    snapshot.forEach((categorySnapshot) => {
+      categorySnapshot.forEach((syllabusSnapshot) => {
+        const syllabusData = syllabusSnapshot.val();
+        const category = syllabusData.category;
+        
+        if (!syllabi[category]) {
+          syllabi[category] = {};
+        }
+        
+        syllabi[category][syllabusData.title] = syllabusData;
+      });
     });
     
-    // Redirect to the signed URL
-    return res.redirect(signedUrl);
+    res.json(syllabi);
   } catch (error) {
-    console.error('Download error:', error);
-    return res.status(500).send('Error downloading file');
+    console.error("Error fetching PDF syllabi:", error);
+    res.status(500).json({ error: "Failed to fetch PDF syllabi" });
   }
 });
+
+
+app.get('/api/proxy-pdf', async (req, res) => {
+  try {
+    const { url } = req.query;
+    
+    if (!url) {
+      return res.status(400).json({ error: 'PDF URL is required' });
+    }
+    
+    console.log('Attempting to fetch PDF from:', url); // Add logging
+    
+    // Fetch the PDF file from Firebase Storage
+    const response = await axios({
+      method: 'GET',
+      url: url,
+      responseType: 'arraybuffer',
+      timeout: 10000, // Add timeout
+      headers: {
+        'Content-Type': 'application/pdf',
+      },
+    });
+    
+    // Set headers to allow CORS
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline');
+    
+    // Send the PDF data
+    res.send(response.data);
+  } catch (error) {
+    console.error('Error proxying PDF:', error.message);
+    // More detailed error response
+    res.status(500).json({ 
+      error: 'Failed to load PDF',
+      details: error.message,
+      url: req.query.url
+    });
+  }
+});
+
+
+
+// API endpoint to get PDF syllabi with pre-signed URLs
+app.get("/api/pdf-syllabi", async (req, res) => {
+  try {
+    const snapshot = await pdfSyllabusRef.once('value');
+    const syllabi = {};
+    
+    // Process all syllabi and generate signed URLs
+    const promises = [];
+    
+    snapshot.forEach((categorySnapshot) => {
+      categorySnapshot.forEach((syllabusSnapshot) => {
+        const syllabusData = syllabusSnapshot.val();
+        const category = syllabusData.category;
+        
+        if (!syllabi[category]) {
+          syllabi[category] = {};
+        }
+        
+        // If we have a file path instead of a full URL
+        if (syllabusData.filePath) {
+          // Add to promises array for batch processing
+          promises.push(
+            generateSignedUrl(syllabusData.filePath)
+              .then(signedUrl => {
+                syllabusData.fileUrl = signedUrl;
+                syllabi[category][syllabusData.title] = syllabusData;
+              })
+              .catch(error => {
+                console.error(`Error generating signed URL for ${syllabusData.title}:`, error);
+                // Still include the syllabus but mark it with an error flag
+                syllabusData.fileError = true;
+                syllabi[category][syllabusData.title] = syllabusData;
+              })
+          );
+        } 
+        // If we already have a full URL (legacy data)
+        else if (syllabusData.fileUrl) {
+          syllabi[category][syllabusData.title] = syllabusData;
+        }
+      });
+    });
+    
+    // Wait for all signed URL generation to complete
+    await Promise.all(promises);
+    
+    res.json(syllabi);
+  } catch (error) {
+    console.error("Error fetching PDF syllabi:", error);
+    res.status(500).json({ error: "Failed to fetch PDF syllabi" });
+  }
+});
+
+// Helper function to generate signed URLs
+async function generateSignedUrl(filePath) {
+  try {
+    // Remove any leading slashes if present
+    const cleanPath = filePath.startsWith('/') ? filePath.substring(1) : filePath;
+    
+    // Generate signed URL with 1-hour expiration
+    const [signedUrl] = await bucket.file(cleanPath).getSignedUrl({
+      version: 'v4',
+      action: 'read',
+      expires: Date.now() + 60 * 60 * 1000, // 1 hour in milliseconds
+    });
+    
+    return signedUrl;
+  } catch (error) {
+    console.error(`Error generating signed URL for file ${filePath}:`, error);
+    throw error;
+  }
+}
 
 
 // Start the server
