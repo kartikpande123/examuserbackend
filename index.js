@@ -2773,6 +2773,40 @@ app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
 });
 
 
+
+app.get('/direct-download/:filePath', async (req, res) => {
+  try {
+    const { filePath } = req.params;
+    const decodedFilePath = decodeURIComponent(filePath);
+    
+    const fullPath = decodedFilePath.startsWith('pdfsyllabi/')
+      ? decodedFilePath
+      : `pdfsyllabi/${decodedFilePath}`;
+    
+    const file = bucket.file(fullPath);
+    const [exists] = await file.exists();
+    
+    if (!exists) {
+      return res.status(404).send('PDF not found');
+    }
+    
+    // Generate a signed URL for direct download
+    const [signedUrl] = await file.getSignedUrl({
+      action: 'read',
+      expires: Date.now() + 15 * 60 * 1000, // 15 minutes
+      responseDisposition: 'attachment; filename="syllabus.pdf"', 
+      responseType: 'application/pdf',
+    });
+    
+    // Redirect to the signed URL
+    return res.redirect(signedUrl);
+  } catch (error) {
+    console.error('Download error:', error);
+    return res.status(500).send('Error downloading file');
+  }
+});
+
+
 // Start the server
 app.listen(port, () => {
     console.log(`Server started on port ${port}`);
