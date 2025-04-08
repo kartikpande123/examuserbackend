@@ -1874,20 +1874,20 @@ app.get("/api/check-exam-purchase", async (req, res) => {
 // Register New Student or Save Student Exam Details
 app.post("/api/register-student", async (req, res) => {
   try {
-    const { 
-      name, 
-      age, 
-      gender, 
-      phoneNo, 
-      email, 
-      district, 
+    const {
+      name,
+      age,
+      gender,
+      phoneNo,
+      email,
+      district,
       state,
       examDetails // Optional exam details
     } = req.body;
-
-    // Generate a unique student ID
-    const studentId = `STD-${Date.now()}`;
-
+    
+    // Generate a 6-digit student ID
+    const studentId = Math.floor(100000 + Math.random() * 900000).toString();
+    
     // Prepare student details
     const studentData = {
       studentId,
@@ -1901,7 +1901,7 @@ app.post("/api/register-student", async (req, res) => {
       registrationDate: new Date().toISOString(),
       purchases: [] // Initialize empty purchases array
     };
-
+    
     // Add exam details to purchases if provided
     if (examDetails) {
       studentData.purchases.push({
@@ -1909,17 +1909,17 @@ app.post("/api/register-student", async (req, res) => {
         purchaseDate: new Date().toISOString()
       });
     }
-
+    
     // Save to Firebase Realtime Database in practicetestpurchasedstudents collection
     const registrationRef = realtimeDatabase.ref('practicetestpurchasedstudents').push();
     await registrationRef.set(studentData);
-
+    
     res.status(201).json({
       success: true,
       message: 'Student registered successfully',
       studentId: studentId
     });
-
+    
   } catch (error) {
     console.error("Student registration error:", error);
     res.status(500).json({
