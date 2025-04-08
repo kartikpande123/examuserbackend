@@ -2508,74 +2508,45 @@ app.get('/api/pdf-student-purchases/:studentId', async (req, res) => {
 
 
 //Pdf syllabus show apis
-
-// Function to check if a purchase is expired
-const isPurchaseExpired = (purchase) => {
-  const expirationDate = new Date(purchase.expirationDate);
-  const currentDate = new Date();
-  return currentDate > expirationDate;
-};
-
-// Get remaining time in days for a purchase
-const getRemainingDays = (purchase) => {
-  const expirationDate = new Date(purchase.expirationDate);
-  const currentDate = new Date();
-  const timeDiff = expirationDate - currentDate;
-  const daysDiff = Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
-  return daysDiff > 0 ? daysDiff : 0;
-};
-
-// Endpoint to verify student and get active syllabus purchases
-app.get('/verify-student-syllabus/:studentId', async (req, res) => {
+// Endpoint to get signed URL for syllabus PDF
+//Fixting alternative apis for pdf syllabus entry entry
+app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
   try {
-    const { studentId } = req.params;
+    // Create a reference to the collection
+    const ref = realtimeDatabase.ref('pdfsyllabuspurchasers');
     
-    // Get student data from Firebase Realtime Database
-    const studentRef = realtimeDatabase.ref(`pdfsyllabuspurchasers/${studentId}`);
-    const snapshot = await studentRef.once('value');
-    const studentData = snapshot.val();
+    // Get all data from the reference
+    const snapshot = await ref.once('value');
     
-    if (!studentData) {
-      return res.status(404).json({ exists: false, message: 'Student not found' });
+    // Convert the snapshot to JSON
+    const data = snapshot.val();
+    
+    // If no data is found, return a 404
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        message: 'No data found'
+      });
     }
     
-    // Extract purchases and filter active ones
-    const allPurchases = studentData.purchases || {};
-    const purchasesArray = Object.values(allPurchases);
-    
-    // Filter active purchases (not expired)
-    const activePurchases = purchasesArray.filter(purchase => !isPurchaseExpired(purchase));
-    
-    // Add remaining days to each purchase
-    const purchasesWithRemainingDays = activePurchases.map(purchase => ({
-      ...purchase,
-      remainingDays: getRemainingDays(purchase)
-    }));
-    
-    // Return student details with active purchases
+    // Return the data
     return res.status(200).json({
-      exists: true,
-      studentDetails: {
-        name: studentData.name,
-        id: studentId,
-        activeSyllabuses: purchasesWithRemainingDays
-      }
+      success: true,
+      data: data
     });
   } catch (error) {
-    console.error('Error verifying student syllabus:', error);
-    return res.status(500).json({ 
-      message: 'An error occurred while verifying student syllabus',
-      error: error.message 
+    console.error('Error retrieving data:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error retrieving data from database',
+      error: error.message
     });
   }
 });
 
 
-
-
-
-
-// Endpoint to get signed URL for syllabus PDF
+// Add this endpoint to your Express backend
+// Modify your proxy-pdf endpoint to add proper error handling and correct headers
 app.get('/get-syllabus-url/:filePath', async (req, res) => {
   try {
     const { filePath } = req.params;
@@ -2622,10 +2593,6 @@ app.get('/get-syllabus-url/:filePath', async (req, res) => {
     });
   }
 });
-
-
-// Add this endpoint to your Express backend
-// Modify your proxy-pdf endpoint to add proper error handling and correct headers
 
 app.get('/proxy-pdf/:filePath', async (req, res) => {
   try {
@@ -2677,112 +2644,10 @@ app.get('/proxy-pdf/:filePath', async (req, res) => {
 });
 
 
-//Fixting alternative apis for pdf purchaser entry
-app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
-  try {
-    // Create a reference to the collection
-    const ref = realtimeDatabase.ref('pdfsyllabuspurchasers');
-    
-    // Get all data from the reference
-    const snapshot = await ref.once('value');
-    
-    // Convert the snapshot to JSON
-    const data = snapshot.val();
-    
-    // If no data is found, return a 404
-    if (!data) {
-      return res.status(404).json({
-        success: false,
-        message: 'No data found'
-      });
-    }
-    
-    // Return the data
-    return res.status(200).json({
-      success: true,
-      data: data
-    });
-  } catch (error) {
-    console.error('Error retrieving data:', error);
-    return res.status(500).json({
-      success: false,
-      message: 'Error retrieving data from database',
-      error: error.message
-    });
-  }
-});
 
 
 
 //Testing pdfs
-// Get all PDF syllabus categories
-app.get("/api/pdf-syllabi", async (req, res) => {
-  try {
-    const snapshot = await pdfSyllabusRef.once('value');
-    const syllabi = {};
-    
-    snapshot.forEach((categorySnapshot) => {
-      categorySnapshot.forEach((syllabusSnapshot) => {
-        const syllabusData = syllabusSnapshot.val();
-        const category = syllabusData.category;
-        
-        if (!syllabi[category]) {
-          syllabi[category] = {};
-        }
-        
-        syllabi[category][syllabusData.title] = syllabusData;
-      });
-    });
-    
-    res.json(syllabi);
-  } catch (error) {
-    console.error("Error fetching PDF syllabi:", error);
-    res.status(500).json({ error: "Failed to fetch PDF syllabi" });
-  }
-});
-
-
-app.get('/api/proxy-pdf', async (req, res) => {
-  try {
-    const { url } = req.query;
-    
-    if (!url) {
-      return res.status(400).json({ error: 'PDF URL is required' });
-    }
-    
-    console.log('Attempting to fetch PDF from:', url); // Add logging
-    
-    // Fetch the PDF file from Firebase Storage
-    const response = await axios({
-      method: 'GET',
-      url: url,
-      responseType: 'arraybuffer',
-      timeout: 10000, // Add timeout
-      headers: {
-        'Content-Type': 'application/pdf',
-      },
-    });
-    
-    // Set headers to allow CORS
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', 'inline');
-    
-    // Send the PDF data
-    res.send(response.data);
-  } catch (error) {
-    console.error('Error proxying PDF:', error.message);
-    // More detailed error response
-    res.status(500).json({ 
-      error: 'Failed to load PDF',
-      details: error.message,
-      url: req.query.url
-    });
-  }
-});
-
-
-
 // API endpoint to get PDF syllabi with pre-signed URLs
 app.get("/api/pdf-syllabi", async (req, res) => {
   try {
@@ -2834,27 +2699,6 @@ app.get("/api/pdf-syllabi", async (req, res) => {
     res.status(500).json({ error: "Failed to fetch PDF syllabi" });
   }
 });
-
-// Helper function to generate signed URLs
-async function generateSignedUrl(filePath) {
-  try {
-    // Remove any leading slashes if present
-    const cleanPath = filePath.startsWith('/') ? filePath.substring(1) : filePath;
-    
-    // Generate signed URL with 1-hour expiration
-    const [signedUrl] = await bucket.file(cleanPath).getSignedUrl({
-      version: 'v4',
-      action: 'read',
-      expires: Date.now() + 60 * 60 * 1000, // 1 hour in milliseconds
-    });
-    
-    return signedUrl;
-  } catch (error) {
-    console.error(`Error generating signed URL for file ${filePath}:`, error);
-    throw error;
-  }
-}
-
 
 // Start the server
 app.listen(port, () => {
