@@ -2509,7 +2509,7 @@ app.get('/api/pdf-student-purchases/:studentId', async (req, res) => {
 
 //Pdf syllabus show apis
 // Endpoint to get signed URL for syllabus PDF
-//Fixting alternative apis for pdf syllabus entry entry
+//Fixting alternative apis for pdf syllabus entry and pdf show
 app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
   try {
     // Create a reference to the collection
@@ -2543,111 +2543,6 @@ app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
     });
   }
 });
-
-
-// Add this endpoint to your Express backend
-// Modify your proxy-pdf endpoint to add proper error handling and correct headers
-app.get('/get-syllabus-url/:filePath', async (req, res) => {
-  try {
-    const { filePath } = req.params;
-    console.log('Requested file path:', filePath);
-
-    // Decode the URL parameter to handle special characters correctly
-    const decodedFilePath = decodeURIComponent(filePath);
-    
-    // Ensure path is correctly formatted
-    const fullPath = decodedFilePath.startsWith('pdfsyllabi/') 
-      ? decodedFilePath 
-      : `pdfsyllabi/${decodedFilePath}`;
-
-    console.log('Accessing file at path:', fullPath);
-    
-    const file = bucket.file(fullPath);
-    const [exists] = await file.exists();
-
-    if (!exists) {
-      console.error(`File not found: ${fullPath}`);
-      return res.status(404).json({ 
-        message: 'PDF file not found in storage'
-      });
-    }
-
-    // Generate a signed URL with the correct CORS headers
-    const [signedUrl] = await file.getSignedUrl({
-      action: 'read',
-      expires: Date.now() + 60 * 60 * 1000, // 1 hour
-      responseDisposition: 'inline',
-      responseType: 'application/pdf',
-      version: 'v4'
-    });
-
-    return res.status(200).json({ 
-      signedUrl,
-      fileName: decodedFilePath.split('/').pop()
-    });
-  } catch (error) {
-    console.error('Error generating syllabus URL:', error);
-    return res.status(500).json({
-      message: 'An error occurred while getting syllabus URL',
-      error: error.message
-    });
-  }
-});
-
-app.get('/proxy-pdf/:filePath', async (req, res) => {
-  try {
-    const { filePath } = req.params;
-    console.log('Proxying PDF for path:', filePath);
-    
-    // Decode the URL parameter
-    const decodedFilePath = decodeURIComponent(filePath);
-    
-    // Ensure path is correctly formatted
-    const fullPath = decodedFilePath.startsWith('pdfsyllabi/')
-      ? decodedFilePath
-      : `pdfsyllabi/${decodedFilePath}`;
-    
-    console.log('Accessing file at path:', fullPath);
-    
-    const file = bucket.file(fullPath);
-    const [exists] = await file.exists();
-    
-    if (!exists) {
-      console.error(`File not found: ${fullPath}`);
-      return res.status(404).send('PDF file not found');
-    }
-    
-    // Download the entire file to buffer first
-    const [fileBuffer] = await file.download();
-    
-    // IMPORTANT: Clean headers - set them AFTER downloading but BEFORE sending
-    res.removeHeader('X-Powered-By'); // Remove unnecessary headers
-    res.removeHeader('Transfer-Encoding'); // This can cause issues with binary files
-    
-    // Set required headers with proper encoding
-    res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Length', fileBuffer.length);
-    res.setHeader('Content-Disposition', `inline; filename="${encodeURIComponent(fullPath.split('/').pop())}"`);
-    res.setHeader('Cache-Control', 'public, max-age=86400'); // Allow caching for 24 hours
-    
-    // CORS headers
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-    
-    // Send the complete buffer in one go
-    return res.end(fileBuffer);
-  } catch (error) {
-    console.error('Error proxying PDF:', error);
-    return res.status(500).send('An error occurred while getting PDF');
-  }
-});
-
-
-
-
-
-//Testing pdfs
 // API endpoint to get PDF syllabi with pre-signed URLs
 app.get("/api/pdf-syllabi", async (req, res) => {
   try {
