@@ -198,10 +198,10 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
     // Validate all required fields
     const requiredFields = [
       'candidateName', 'gender', 'dob', 'district', 
-      'pincode', 'state', 'phone', 'exam', 
+      'pincode', 'state', 'phone', 'exam',
       'examDate', 'examStartTime', 'examEndTime'
     ];
-
+    
     // Check for missing fields
     const missingFields = requiredFields.filter(field => !req.body[field]);
     if (missingFields.length > 0) {
@@ -210,7 +210,7 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
         error: `Missing required fields: ${missingFields.join(', ')}`
       });
     }
-
+    
     // Validate photo
     if (!req.file) {
       return res.status(400).json({
@@ -218,7 +218,7 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
         error: 'No photo file received'
       });
     }
-
+    
     // Process image with Sharp
     const processedImage = await sharp(req.file.buffer)
       .resize({
@@ -229,14 +229,22 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
       .toFormat('jpeg')  // Standardize to JPEG
       .jpeg({ quality: 80 })  // Compress with 80% quality
       .toBuffer();
-
+    
     // Generate unique registration number
     const uniqueRegisterNo = `REG${Date.now()}`;
-
+    
     // Convert processed photo to base64
     const base64Image = processedImage.toString('base64');
     const photoUrl = `data:image/jpeg;base64,${base64Image}`;
-
+    
+    // Extract payment details if available
+    const paymentDetails = {
+      paymentId: req.body.paymentId || null,
+      orderId: req.body.orderId || null,
+      paymentAmount: req.body.paymentAmount || req.body.examPrice || null,
+      paymentDate: req.body.paymentDate || new Date().toISOString()
+    };
+    
     // Prepare full candidate data
     const candidateData = {
       candidateName: req.body.candidateName,
@@ -255,9 +263,14 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
       registrationNumber: uniqueRegisterNo,
       photoSize: processedImage.length,
       createdAt: new Date().toISOString(),
-      used: false
+      used: false,
+      // Add payment details to the candidate data
+      payment: {
+        ...paymentDetails,
+        status: 'completed'
+      }
     };
-
+    
     // Firestore document size limit is ~1MB
     // Check image size before saving
     if (processedImage.length > 1 * 1024 * 1024) {
@@ -266,11 +279,28 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
         error: 'Processed image still too large'
       });
     }
-
+    
     // Save to Firestore
     const candidateRef = firestore.collection('candidates').doc(uniqueRegisterNo);
     await candidateRef.set(candidateData);
-
+    
+    // Also save payment record separately for reporting purposes
+    if (paymentDetails.paymentId) {
+      const paymentRef = firestore.collection('payments').doc(paymentDetails.paymentId);
+      await paymentRef.set({
+        orderId: paymentDetails.orderId,
+        amount: paymentDetails.paymentAmount,
+        date: paymentDetails.paymentDate,
+        candidateName: req.body.candidateName,
+        candidateEmail: req.body.email || '',
+        candidatePhone: req.body.phone,
+        exam: req.body.exam,
+        registrationNumber: uniqueRegisterNo,
+        status: 'completed',
+        createdAt: new Date().toISOString()
+      });
+    }
+    
     // Send success response
     res.status(201).json({
       success: true,
@@ -280,7 +310,7 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
         ...candidateData
       }
     });
-
+   
   } catch (error) {
     console.error('Registration error:', error);
     res.status(500).json({
@@ -289,7 +319,6 @@ app.post('/api/register', upload.single('photo'), async (req, res) => {
     });
   }
 });
-
 
 //User reg number api
 app.get('/api/candidates', async (req, res) => {
