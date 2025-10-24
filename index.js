@@ -38,7 +38,7 @@ const upload = multer({
 // Multer setup for file uploads
 const pdfUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // Limit: 10 MB
+  limits: { fileSize: 100 * 1024 * 1024 }, // Limit: 100 MB
   fileFilter: (req, file, cb) => {
     // Accept only PDF files
     if (file.mimetype === 'application/pdf') {
@@ -48,6 +48,8 @@ const pdfUpload = multer({
     }
   }
 });
+
+const videoUpload = multer({ storage: multer.memoryStorage() });
 
 
 
@@ -4745,6 +4747,662 @@ app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
   }
 });
 
+
+
+
+
+//VideoSyllabus Apis
+
+// ✅ Firebase Realtime Database reference for video syllabus categories
+const videoSyllabusCategoryRef = realtimeDatabase.ref('videosyllabuscategories');
+const videoSyllabusRef = realtimeDatabase.ref('videosyllabi');
+
+// ✅ Create a new video syllabus category
+app.post("/api/videosyllabuscategories", async (req, res) => {
+  try {
+    const { name } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: "Category name is required" });
+    }
+
+    const newVideoSyllabusCategoryRef = videoSyllabusCategoryRef.push();
+    await newVideoSyllabusCategoryRef.set({
+      name,
+      createdAt: admin.database.ServerValue.TIMESTAMP
+    });
+
+    res.status(201).json({
+      id: newVideoSyllabusCategoryRef.key,
+      name
+    });
+  } catch (error) {
+    console.error("Error creating video syllabus category:", error);
+    res.status(500).json({ error: "Failed to create video syllabus category" });
+  }
+});
+
+// ✅ Get all video syllabus categories
+app.get("/api/videosyllabuscategories", async (req, res) => {
+  try {
+    const snapshot = await videoSyllabusCategoryRef.once('value');
+    const videoSyllabusCategories = [];
+
+    snapshot.forEach((childSnapshot) => {
+      videoSyllabusCategories.push({
+        id: childSnapshot.key,
+        ...childSnapshot.val()
+      });
+    });
+
+    res.json(videoSyllabusCategories);
+  } catch (error) {
+    console.error("Error fetching video syllabus categories:", error);
+    res.status(500).json({ error: "Failed to fetch video syllabus categories" });
+  }
+});
+
+// ✅ Update a video syllabus category
+app.put("/api/videosyllabuscategories/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name } = req.body;
+
+    if (!name) {
+      return res.status(400).json({ error: "Category name is required" });
+    }
+
+    const videoCategoryRef = videoSyllabusCategoryRef.child(id);
+    await videoCategoryRef.update({
+      name,
+      updatedAt: admin.database.ServerValue.TIMESTAMP
+    });
+
+    res.json({ id, name });
+  } catch (error) {
+    console.error("Error updating video syllabus category:", error);
+    res.status(500).json({ error: "Failed to update video syllabus category" });
+  }
+});
+
+// ✅ Delete a video syllabus category
+app.delete("/api/videosyllabuscategories/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    await videoSyllabusCategoryRef.child(id).remove();
+    res.json({ message: "Video syllabus category deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting video syllabus category:", error);
+    res.status(500).json({ error: "Failed to delete video syllabus category" });
+  }
+});
+
+
+// Create or update Video syllabus
+// Use videoUpload.single for the video file upload route
+app.post("/api/video-syllabi", videoUpload.single('videoFile'), async (req, res) => {
+  try {
+    // After Multer processes the file, it will be available as req.file
+    if (!req.file) {
+      return res.status(400).json({ error: "Video file is required" });
+    }
+    
+    const { category, title, fees, duration } = req.body;
+    
+    if (!category || !title) {
+      return res.status(400).json({ error: "Category and title are required" });
+    }
+    
+    // The file data is now in req.file
+    const videoFile = req.file;
+    const timestamp = Date.now();
+    const sanitizedTitle = sanitizeFilename(title);
+    const sanitizedCategory = sanitizeFilename(category);
+    
+    // Get file extension from original filename
+    const fileExtension = videoFile.originalname.split('.').pop();
+    
+    // Create a unique file path in Firebase Storage
+    const filePath = `videosyllabi/${sanitizedCategory}/${sanitizedTitle}_${timestamp}.${fileExtension}`;
+    
+    // Upload file to Firebase Storage
+    const fileBuffer = videoFile.buffer; // With Multer, file data is in the buffer property
+    const file = bucket.file(filePath);
+    
+    await file.save(fileBuffer, {
+      metadata: {
+        contentType: videoFile.mimetype || 'video/mp4',
+        metadata: {
+          originalName: videoFile.originalname, // With Multer, the file name is in originalname property
+          category,
+          title
+        }
+      }
+    });
+    
+    // Get the public URL of the file
+    const [url] = await file.getSignedUrl({
+      action: 'read',
+      expires: '03-01-2500' // Long expiration date
+    });
+    
+    // Create syllabus entry in Realtime Database
+    const syllabusData = {
+      title,
+      category,
+      fees: parseFloat(fees) || 0,
+      duration: duration ? `${duration} days` : "N/A",
+      filePath,
+      fileUrl: url,
+      createdAt: timestamp,
+      updatedAt: timestamp
+    };
+    
+    const syllabusKey = `${sanitizedCategory}/${sanitizedTitle}`;
+    await videoSyllabusRef.child(syllabusKey).set(syllabusData);
+    
+    res.status(201).json({
+      message: "Video syllabus created successfully",
+      data: {
+        id: syllabusKey,
+        ...syllabusData
+      }
+    });
+  } catch (error) {
+    console.error("Error creating video syllabus:", error);
+    res.status(500).json({ error: "Failed to create video syllabus" });
+  }
+});
+
+// Update Video syllabus
+app.put("/api/video-syllabi/:category/:title", async (req, res) => {
+  try {
+    const { category, title } = req.params;
+    const { newCategory, newTitle, fees, duration } = req.body;
+    
+    if (!newCategory || !newTitle) {
+      return res.status(400).json({ error: "Category and title are required" });
+    }
+    
+    const sanitizedOldCategory = sanitizeFilename(category);
+    const sanitizedOldTitle = sanitizeFilename(title);
+    const oldSyllabusKey = `${sanitizedOldCategory}/${sanitizedOldTitle}`;
+    
+    // Check if syllabus exists
+    const syllabusSnapshot = await videoSyllabusRef.child(oldSyllabusKey).once('value');
+    const syllabusData = syllabusSnapshot.val();
+    
+    if (!syllabusData) {
+      return res.status(404).json({ error: "Video syllabus not found" });
+    }
+    
+    // Update metadata
+    const updatedData = {
+      ...syllabusData,
+      title: newTitle,
+      category: newCategory,
+      fees: parseFloat(fees) || 0,
+      duration: duration ? `${duration} days` : "N/A",
+      updatedAt: Date.now()
+    };
+    
+    // If category or title changed, we need to create a new entry and delete the old one
+    if (category !== newCategory || title !== newTitle) {
+      const sanitizedNewCategory = sanitizeFilename(newCategory);
+      const sanitizedNewTitle = sanitizeFilename(newTitle);
+      const newSyllabusKey = `${sanitizedNewCategory}/${sanitizedNewTitle}`;
+      
+      // Create new entry with updated data
+      await videoSyllabusRef.child(newSyllabusKey).set(updatedData);
+      
+      // Delete old entry
+      await videoSyllabusRef.child(oldSyllabusKey).remove();
+      
+      res.json({
+        message: "Video syllabus updated successfully",
+        data: {
+          id: newSyllabusKey,
+          ...updatedData
+        }
+      });
+    } else {
+      // Update existing entry
+      await videoSyllabusRef.child(oldSyllabusKey).update(updatedData);
+      
+      res.json({
+        message: "Video syllabus updated successfully",
+        data: {
+          id: oldSyllabusKey,
+          ...updatedData
+        }
+      });
+    }
+    
+  } catch (error) {
+    console.error("Error updating video syllabus:", error);
+    res.status(500).json({ error: "Failed to update video syllabus" });
+  }
+});
+
+// Replace Video file for existing syllabus
+app.put("/api/video-syllabi/:category/:title/file", videoUpload.single('videoFile'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ error: "Video file is required" });
+    }
+    
+    const { category, title } = req.params;
+    const videoFile = req.file;
+    
+    const sanitizedCategory = sanitizeFilename(category);
+    const sanitizedTitle = sanitizeFilename(title);
+    const syllabusKey = `${sanitizedCategory}/${sanitizedTitle}`;
+    
+    // Check if syllabus exists
+    const syllabusSnapshot = await videoSyllabusRef.child(syllabusKey).once('value');
+    const syllabusData = syllabusSnapshot.val();
+    
+    if (!syllabusData) {
+      return res.status(404).json({ error: "Video syllabus not found" });
+    }
+    
+    // Delete old file from storage if it exists
+    if (syllabusData.filePath) {
+      try {
+        await bucket.file(syllabusData.filePath).delete();
+      } catch (deleteError) {
+        console.warn("Failed to delete old file, it might not exist:", deleteError);
+      }
+    }
+    
+    // Upload new file to Firebase Storage
+    const timestamp = Date.now();
+    const fileExtension = videoFile.originalname.split('.').pop();
+    const filePath = `videosyllabi/${sanitizedCategory}/${sanitizedTitle}_${timestamp}.${fileExtension}`;
+    const fileBuffer = videoFile.buffer;
+    const file = bucket.file(filePath);
+    
+    await file.save(fileBuffer, {
+      metadata: {
+        contentType: videoFile.mimetype || 'video/mp4',
+        metadata: {
+          originalName: videoFile.originalname,
+          category,
+          title
+        }
+      }
+    });
+    
+    // Get the public URL of the file
+    const [url] = await file.getSignedUrl({
+      action: 'read',
+      expires: '03-01-2500' // Long expiration date
+    });
+    
+    // Update syllabus data with new file info
+    const updatedData = {
+      ...syllabusData,
+      filePath,
+      fileUrl: url,
+      updatedAt: timestamp
+    };
+    
+    await videoSyllabusRef.child(syllabusKey).update(updatedData);
+    
+    res.json({
+      message: "Video file updated successfully",
+      data: {
+        id: syllabusKey,
+        ...updatedData
+      }
+    });
+    
+  } catch (error) {
+    console.error("Error updating video file:", error);
+    res.status(500).json({ error: "Failed to update video file" });
+  }
+});
+
+// Get all Video syllabi
+app.get("/api/video-syllabi", async (req, res) => {
+  try {
+    const snapshot = await videoSyllabusRef.once('value');
+    const syllabi = {};
+    
+    snapshot.forEach((categorySnapshot) => {
+      categorySnapshot.forEach((syllabusSnapshot) => {
+        const syllabusData = syllabusSnapshot.val();
+        const category = syllabusData.category;
+        
+        if (!syllabi[category]) {
+          syllabi[category] = {};
+        }
+        
+        syllabi[category][syllabusData.title] = syllabusData;
+      });
+    });
+    
+    res.json(syllabi);
+  } catch (error) {
+    console.error("Error fetching video syllabi:", error);
+    res.status(500).json({ error: "Failed to fetch video syllabi" });
+  }
+});
+
+// Get Video syllabi by category
+app.get("/api/video-syllabi/category/:category", async (req, res) => {
+  try {
+    const { category } = req.params;
+    const sanitizedCategory = sanitizeFilename(category);
+    
+    const snapshot = await videoSyllabusRef.child(sanitizedCategory).once('value');
+    const syllabi = {};
+    
+    snapshot.forEach((syllabusSnapshot) => {
+      const syllabusData = syllabusSnapshot.val();
+      syllabi[syllabusData.title] = syllabusData;
+    });
+    
+    res.json(syllabi);
+  } catch (error) {
+    console.error("Error fetching video syllabi by category:", error);
+    res.status(500).json({ error: "Failed to fetch video syllabi by category" });
+  }
+});
+
+// Delete Video syllabus
+app.delete("/api/video-syllabi/:category/:title", async (req, res) => {
+  try {
+    const { category, title } = req.params;
+    
+    const sanitizedCategory = sanitizeFilename(category);
+    const sanitizedTitle = sanitizeFilename(title);
+    const syllabusKey = `${sanitizedCategory}/${sanitizedTitle}`;
+    
+    // Check if syllabus exists
+    const syllabusSnapshot = await videoSyllabusRef.child(syllabusKey).once('value');
+    const syllabusData = syllabusSnapshot.val();
+    
+    if (!syllabusData) {
+      return res.status(404).json({ error: "Video syllabus not found" });
+    }
+    
+    // Delete file from storage if it exists
+    if (syllabusData.filePath) {
+      try {
+        await bucket.file(syllabusData.filePath).delete();
+      } catch (deleteError) {
+        console.warn("Failed to delete file, it might not exist:", deleteError);
+      }
+    }
+    
+    // Delete syllabus from Realtime Database
+    await videoSyllabusRef.child(syllabusKey).remove();
+    
+    res.json({ message: "Video syllabus deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting video syllabus:", error);
+    res.status(500).json({ error: "Failed to delete video syllabus" });
+  }
+});
+
+
+
+//Video syllbus user apis
+
+// =============================
+// 🎬 VIDEO PURCHASE APIS
+// =============================
+
+// Firebase Realtime Database references
+const videoSyllabusPurchasersRef = realtimeDatabase.ref('videosyllabuspurchasers');
+
+// 1️⃣ Verify video student
+app.get('/api/video-verify-student/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const studentSnapshot = await videoSyllabusPurchasersRef.child(studentId).once('value');
+    const studentData = studentSnapshot.val();
+
+    if (studentData) {
+      return res.json({
+        exists: true,
+        studentDetails: {
+          studentId,
+          ...studentData
+        }
+      });
+    } else {
+      return res.json({ exists: false });
+    }
+  } catch (error) {
+    console.error('Error verifying video student:', error);
+    return res.status(500).json({
+      error: 'Failed to verify video student ID',
+      message: error.message
+    });
+  }
+});
+
+// 2️⃣ Register new video student
+app.post('/api/video-register-student', async (req, res) => {
+  try {
+    const studentData = req.body;
+    let studentId;
+    let isUnique = false;
+
+    while (!isUnique) {
+      studentId = Math.floor(100000 + Math.random() * 900000).toString();
+      const existing = await videoSyllabusPurchasersRef.child(studentId).once('value');
+      if (!existing.exists()) isUnique = true;
+    }
+
+    await videoSyllabusPurchasersRef.child(studentId).set({
+      name: studentData.name,
+      age: studentData.age,
+      gender: studentData.gender,
+      phoneNo: studentData.phoneNo,
+      email: studentData.email || null,
+      district: studentData.district,
+      state: studentData.state,
+      createdAt: admin.database.ServerValue.TIMESTAMP
+    });
+
+    return res.json({
+      success: true,
+      message: 'Video student registered successfully',
+      studentId
+    });
+  } catch (error) {
+    console.error('Error registering video student:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to register video student',
+      message: error.message
+    });
+  }
+});
+
+// 3️⃣ Update student details
+app.put('/api/video-update-student/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const updatedData = req.body;
+
+    const studentSnapshot = await videoSyllabusPurchasersRef.child(studentId).once('value');
+    if (!studentSnapshot.exists()) {
+      return res.status(404).json({ success: false, error: 'Video student not found' });
+    }
+
+    await videoSyllabusPurchasersRef.child(studentId).update({
+      ...updatedData,
+      updatedAt: admin.database.ServerValue.TIMESTAMP
+    });
+
+    const updatedStudent = (await videoSyllabusPurchasersRef.child(studentId).once('value')).val();
+
+    return res.json({
+      success: true,
+      message: 'Video student details updated successfully',
+      studentDetails: { studentId, ...updatedStudent }
+    });
+  } catch (error) {
+    console.error('Error updating video student:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to update video student',
+      message: error.message
+    });
+  }
+});
+
+// 4️⃣ Create a new video order
+app.post('/api/create-video-order', async (req, res) => {
+  try {
+    const { amount, notes } = req.body;
+    const options = {
+      amount: Math.round(amount * 100),
+      currency: 'INR',
+      receipt: `video_receipt_${Date.now()}`,
+      notes
+    };
+
+    const order = await razorpay.orders.create(options);
+    return res.json({ success: true, order });
+  } catch (error) {
+    console.error('Error creating video order:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to create video payment order',
+      message: error.message
+    });
+  }
+});
+
+// 5️⃣ Verify video payment
+app.post('/api/verify-video-payment', async (req, res) => {
+  try {
+    const { orderId, paymentId, signature, syllabusId, filePath, userId } = req.body;
+
+    const generatedSignature = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${orderId}|${paymentId}`)
+      .digest('hex');
+
+    if (generatedSignature !== signature) {
+      return res.status(400).json({ success: false, error: 'Invalid video payment signature' });
+    }
+
+    return res.json({
+      success: true,
+      message: 'Video payment verified successfully',
+      paymentId,
+      syllabusId,
+      userId
+    });
+  } catch (error) {
+    console.error('Error verifying video payment:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to verify video payment',
+      message: error.message
+    });
+  }
+});
+
+// 6️⃣ Save video syllabus purchase
+app.post('/api/video-save-syllabus-purchase', async (req, res) => {
+  try {
+    const { studentId, syllabusDetails, paymentDetails, purchaseDate } = req.body;
+    const purchaseId = uuidv4();
+
+    const purchaseData = {
+      purchaseId,
+      syllabusId: syllabusDetails.id,
+      syllabusTitle: syllabusDetails.title,
+      syllabusCategory: syllabusDetails.category,
+      syllabusPrice: syllabusDetails.fees,
+      syllabusDuration: syllabusDetails.duration,
+      syllabusDescription: syllabusDetails.description || '',
+      syllabusFilePath: syllabusDetails.filePath,
+      syllabusFileUrl: syllabusDetails.fileUrl,
+      paymentStatus: paymentDetails.status,
+      paymentAmount: paymentDetails.amount,
+      paymentId: paymentDetails.paymentId || null,
+      orderId: paymentDetails.orderId || null,
+      purchaseDate,
+      createdAt: admin.database.ServerValue.TIMESTAMP
+    };
+
+    await videoSyllabusPurchasersRef
+      .child(studentId)
+      .child('purchases')
+      .child(purchaseId)
+      .set(purchaseData);
+
+    return res.json({
+      success: true,
+      message: 'Video syllabus purchase saved successfully',
+      purchaseId
+    });
+  } catch (error) {
+    console.error('Error saving video purchase:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to save video syllabus purchase',
+      message: error.message
+    });
+  }
+});
+
+// 7️⃣ Get student's purchased video syllabi
+app.get('/api/video-student-purchases/:studentId', async (req, res) => {
+  try {
+    const { studentId } = req.params;
+    const purchasesSnapshot = await videoSyllabusPurchasersRef
+      .child(studentId)
+      .child('purchases')
+      .once('value');
+
+    const purchases = purchasesSnapshot.val() || {};
+    return res.json({
+      success: true,
+      purchases: Object.values(purchases)
+    });
+  } catch (error) {
+    console.error('Error fetching video student purchases:', error);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to fetch video student purchases',
+      message: error.message
+    });
+  }
+});
+
+// 8️⃣ Get all video syllabus purchasers (admin/debug view)
+app.get('/api/videosyllabuspurchasers', async (req, res) => {
+  try {
+    const snapshot = await videoSyllabusPurchasersRef.once('value');
+    const data = snapshot.val();
+
+    if (!data) {
+      return res.status(404).json({
+        success: false,
+        message: 'No video syllabus purchasers found'
+      });
+    }
+
+    return res.json({ success: true, data });
+  } catch (error) {
+    console.error('Error retrieving video purchasers:', error);
+    return res.status(500).json({
+      success: false,
+      message: 'Error retrieving video purchasers',
+      error: error.message
+    });
+  }
+});
 
 
 
