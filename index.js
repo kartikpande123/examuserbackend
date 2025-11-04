@@ -28,28 +28,56 @@ const firestore = admin.firestore();
 const realtimeDatabase = admin.database();
 const bucket = admin.storage().bucket();
 
-// Multer setup for image upload
+// Common 500 MB limit
+const FILE_SIZE_LIMIT = 500 * 1024 * 1024; // 500 MB
+
+// Image upload
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // Limit: 5 MB for file size
+  limits: { fileSize: FILE_SIZE_LIMIT },
 });
 
-
-// Multer setup for file uploads
+// PDF upload (only PDFs allowed)
 const pdfUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 100 * 1024 * 1024 }, // Limit: 100 MB
+  limits: { fileSize: FILE_SIZE_LIMIT },
   fileFilter: (req, file, cb) => {
-    // Accept only PDF files
     if (file.mimetype === 'application/pdf') {
       cb(null, true);
     } else {
       cb(new Error('Only PDF files are allowed'));
     }
-  }
+  },
 });
 
-const videoUpload = multer({ storage: multer.memoryStorage() });
+// Video upload
+const videoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: FILE_SIZE_LIMIT },
+});
+
+// Video + Image upload
+const videoImageUpload = videoUpload.fields([
+  { name: "videoFile", maxCount: 1 },
+  { name: "imageFile", maxCount: 1 },
+]);
+
+// PDF + Image upload
+const pdfImageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: FILE_SIZE_LIMIT },
+}).fields([
+  { name: "pdfFile", maxCount: 1 },
+  { name: "imageFile", maxCount: 1 },
+]);
+
+module.exports = {
+  upload,
+  pdfUpload,
+  videoUpload,
+  videoImageUpload,
+  pdfImageUpload
+};
 
 
 
@@ -1163,116 +1191,75 @@ app.post('/api/save-answer', async (req, res) => {
 
 
 //Results Api
-// Add this new API endpoint to your existing Express app
-app.get("/api/today-exam-results", async (req, res) => {
+// ✅ API to get all exam results (with status, used, submitted)
+app.get("/api/all-exam-results", async (req, res) => {
   try {
-    const today = moment().format('YYYY-MM-DD');
-    
-    // Step 1: Get today's exam from Firestore
-    const examsSnapshot = await firestore.collection('Exams').get();
-    let todayExam = null;
-    let examQuestions = [];
+    // Reference to the Results node in Realtime Database
+    const resultsRef = realtimeDatabase.ref('Results');
 
-    // Find today's exam
-    for (const doc of examsSnapshot.docs) {
-      const examData = doc.data();
-      if (examData.dateTime?.date === today) {
-        todayExam = {
-          id: doc.id,
-          ...examData.dateTime
+    // Fetch all results
+    const snapshot = await resultsRef.once('value');
+    const resultsData = snapshot.val();
+
+    if (!resultsData) {
+      return res.status(200).json({
+        success: true,
+        message: "No exam results found",
+        data: {}
+      });
+    }
+
+    // ✅ Transform data with status calculation
+    const formattedResults = Object.entries(resultsData).map(([examId, examData]) => ({
+      examId,
+      candidates: Object.entries(examData).map(([registrationId, candidateData]) => {
+        const used = candidateData.used || false;
+        const submitted = candidateData.submitted || false;
+
+        let status;
+        if (submitted === true) status = "Submitted";
+        else if (!used) status = "Not Attended";
+        else status = "Network Error";
+
+        return {
+          registrationId,
+          candidateName: candidateData.candidateName,
+          phone: candidateData.phone,
+          totalQuestions: candidateData.totalQuestions,
+          correctAnswers: candidateData.correctAnswers,
+          skippedQuestions: candidateData.skippedQuestions,
+          wrongAnswers: candidateData.wrongAnswers,
+          used,
+          submitted,
+          status, // ✅ Added status here
+          timestamp: candidateData.timestamp || null
         };
-        
-        // Get questions for this exam
-        const questionsSnapshot = await doc.ref.collection('Questions').orderBy('order').get();
-        examQuestions = questionsSnapshot.docs.map(qDoc => ({
-          id: qDoc.id,
-          ...qDoc.data()
-        }));
-        break;
-      }
-    }
-
-    if (!todayExam) {
-      return res.status(404).json({
-        success: false,
-        message: 'No exam found for today'
-      });
-    }
-
-    // Step 2: Get candidates who took this exam
-    const candidatesSnapshot = await firestore.collection('candidates')
-      .where('exam', '==', todayExam.id)
-      .get();
-
-    const results = [];
-    
-    // Step 3: Process each candidate's answers
-    for (const candidateDoc of candidatesSnapshot.docs) {
-      const candidateData = candidateDoc.data();
-      
-      // Get candidate's answers
-      const answersSnapshot = await candidateDoc.ref.collection('answers').get();
-      const answers = answersSnapshot.docs.map(aDoc => ({
-        id: aDoc.id,
-        ...aDoc.data()
-      }));
-
-      // Calculate results
-      let correctAnswers = 0;
-      let skippedQuestions = 0;
-      
-      examQuestions.forEach(question => {
-        const candidateAnswer = answers.find(a => a.order === question.order);
-        
-        if (!candidateAnswer || candidateAnswer.skipped) {
-          skippedQuestions++;
-        } else if (candidateAnswer.answer === question.correctAnswer) {
-          correctAnswers++;
-        }
-      });
-
-      // Prepare result object
-      const resultData = {
-        registrationNumber: candidateDoc.id,
-        candidateName: candidateData.candidateName,
-        phone: candidateData.phone,
-        totalQuestions: examQuestions.length,
-        correctAnswers,
-        skippedQuestions,
-        wrongAnswers: examQuestions.length - (correctAnswers + skippedQuestions)
-      };
-
-      results.push(resultData);
-
-      // Store results in Realtime Database
-      const resultRef = realtimeDatabase.ref(`Results/${todayExam.id}/${candidateDoc.id}`);
-      await resultRef.set({
-        ...resultData,
-        timestamp: new Date().toISOString()
-      });
-    }
+      })
+    }));
 
     res.status(200).json({
       success: true,
-      examDetails: {
-        examName: todayExam.id,
-        date: todayExam.date,
-        startTime: todayExam.startTime,
-        endTime: todayExam.endTime,
-        totalMarks: todayExam.marks
-      },
-      results
+      message: "Exam results fetched successfully",
+      data: formattedResults,
+      metadata: {
+        totalExams: formattedResults.length,
+        totalCandidates: formattedResults.reduce(
+          (total, exam) => total + exam.candidates.length,
+          0
+        )
+      }
     });
 
   } catch (error) {
-    console.error('Error fetching exam results:', error);
+    console.error("Error fetching all exam results:", error);
     res.status(500).json({
       success: false,
-      error: 'Failed to fetch exam results',
+      error: "Failed to fetch exam results",
       details: error.message
     });
   }
 });
+
 
 
 // API to get all exam results
@@ -4406,70 +4393,79 @@ const sanitizeFilename = (filename) => {
 
 // Create or update PDF syllabus
 // Use pdfUpload.single for the PDF file upload route
-app.post("/api/pdf-syllabi", pdfUpload.single('pdfFile'), async (req, res) => {
+// ---------- POST: Create PDF Syllabus ----------
+app.post("/api/pdf-syllabi", pdfImageUpload, async (req, res) => {
   try {
-    // After Multer processes the file, it will be available as req.file
-    if (!req.file) {
-      return res.status(400).json({ error: "PDF file is required" });
-    }
-    
+    const pdfFile = req.files?.pdfFile?.[0];
+    const imageFile = req.files?.imageFile?.[0];
     const { category, title, fees, duration } = req.body;
-    
-    if (!category || !title) {
+
+    if (!pdfFile) return res.status(400).json({ error: "PDF file is required" });
+    if (!category || !title)
       return res.status(400).json({ error: "Category and title are required" });
-    }
-    
-    // The file data is now in req.file
-    const pdfFile = req.file;
+
     const timestamp = Date.now();
     const sanitizedTitle = sanitizeFilename(title);
     const sanitizedCategory = sanitizeFilename(category);
-    
-    // Create a unique file path in Firebase Storage
-    const filePath = `pdfsyllabi/${sanitizedCategory}/${sanitizedTitle}_${timestamp}.pdf`;
-    
-    // Upload file to Firebase Storage
-    const fileBuffer = pdfFile.buffer; // With Multer, file data is in the buffer property
-    const file = bucket.file(filePath);
-    
-    await file.save(fileBuffer, {
+
+    // ===== Upload PDF File =====
+    const pdfPath = `pdfsyllabi/${sanitizedCategory}/${sanitizedTitle}_${timestamp}.pdf`;
+    const pdfBucketFile = bucket.file(pdfPath);
+
+    await pdfBucketFile.save(pdfFile.buffer, {
       metadata: {
-        contentType: 'application/pdf',
-        metadata: {
-          originalName: pdfFile.originalname, // With Multer, the file name is in originalname property
-          category,
-          title
-        }
+        contentType: pdfFile.mimetype,
+        metadata: { category, title, originalName: pdfFile.originalname }
       }
     });
-    
-    // Get the public URL of the file
-    const [url] = await file.getSignedUrl({
-      action: 'read',
-      expires: '03-01-2500' // Long expiration date
+
+    const [pdfUrl] = await pdfBucketFile.getSignedUrl({
+      action: "read",
+      expires: "03-01-2500"
     });
-    
-    // Create syllabus entry in Realtime Database
+
+    // ===== Upload Thumbnail Image (optional) =====
+    let imagePath = null;
+    let imageUrl = null;
+
+    if (imageFile) {
+      const imgExt = imageFile.originalname.split(".").pop();
+      imagePath = `pdfsyllabi/${sanitizedCategory}/thumbnails/${sanitizedTitle}_${timestamp}.${imgExt}`;
+      const imgBucketFile = bucket.file(imagePath);
+
+      await imgBucketFile.save(imageFile.buffer, {
+        metadata: {
+          contentType: imageFile.mimetype,
+          metadata: { category, title, originalName: imageFile.originalname }
+        }
+      });
+
+      [imageUrl] = await imgBucketFile.getSignedUrl({
+        action: "read",
+        expires: "03-01-2500"
+      });
+    }
+
+    // ===== Save to Database =====
     const syllabusData = {
       title,
       category,
       fees: parseFloat(fees) || 0,
       duration: duration ? `${duration} days` : "N/A",
-      filePath,
-      fileUrl: url,
+      filePath: pdfPath,
+      fileUrl: pdfUrl,
+      imagePath,
+      imageUrl,
       createdAt: timestamp,
       updatedAt: timestamp
     };
-    
+
     const syllabusKey = `${sanitizedCategory}/${sanitizedTitle}`;
     await pdfSyllabusRef.child(syllabusKey).set(syllabusData);
-    
+
     res.status(201).json({
       message: "PDF syllabus created successfully",
-      data: {
-        id: syllabusKey,
-        ...syllabusData
-      }
+      data: syllabusData
     });
   } catch (error) {
     console.error("Error creating PDF syllabus:", error);
@@ -4477,70 +4473,125 @@ app.post("/api/pdf-syllabi", pdfUpload.single('pdfFile'), async (req, res) => {
   }
 });
 
+
 // Update PDF syllabus
-app.put("/api/pdf-syllabi/:category/:title", async (req, res) => {
+// ---------- PUT: Update PDF Syllabus ----------
+app.put("/api/pdf-syllabi/:category/:title", pdfImageUpload, async (req, res) => {
   try {
     const { category, title } = req.params;
     const { newCategory, newTitle, fees, duration } = req.body;
-    
-    if (!newCategory || !newTitle) {
+    const pdfFile = req.files?.pdfFile?.[0];
+    const imageFile = req.files?.imageFile?.[0];
+
+    if (!newCategory || !newTitle)
       return res.status(400).json({ error: "Category and title are required" });
-    }
-    
+
     const sanitizedOldCategory = sanitizeFilename(category);
     const sanitizedOldTitle = sanitizeFilename(title);
     const oldSyllabusKey = `${sanitizedOldCategory}/${sanitizedOldTitle}`;
-    
-    // Check if syllabus exists
-    const syllabusSnapshot = await pdfSyllabusRef.child(oldSyllabusKey).once('value');
+
+    // Get existing syllabus
+    const syllabusSnapshot = await pdfSyllabusRef.child(oldSyllabusKey).once("value");
     const syllabusData = syllabusSnapshot.val();
-    
-    if (!syllabusData) {
+
+    if (!syllabusData)
       return res.status(404).json({ error: "PDF syllabus not found" });
+
+    const timestamp = Date.now();
+    const sanitizedNewCategory = sanitizeFilename(newCategory);
+    const sanitizedNewTitle = sanitizeFilename(newTitle);
+
+    let pdfPath = syllabusData.filePath;
+    let pdfUrl = syllabusData.fileUrl;
+    let imagePath = syllabusData.imagePath;
+    let imageUrl = syllabusData.imageUrl;
+
+    // ===== Replace PDF if new uploaded =====
+    if (pdfFile) {
+      if (syllabusData.filePath) {
+        try {
+          await bucket.file(syllabusData.filePath).delete();
+        } catch (err) {
+          console.warn("Failed to delete old PDF:", err.message);
+        }
+      }
+
+      const newPdfPath = `pdfsyllabi/${sanitizedNewCategory}/${sanitizedNewTitle}_${timestamp}.pdf`;
+      const pdfBucketFile = bucket.file(newPdfPath);
+
+      await pdfBucketFile.save(pdfFile.buffer, {
+        metadata: {
+          contentType: pdfFile.mimetype,
+          metadata: { category: newCategory, title: newTitle }
+        }
+      });
+
+      [pdfUrl] = await pdfBucketFile.getSignedUrl({
+        action: "read",
+        expires: "03-01-2500"
+      });
+
+      pdfPath = newPdfPath;
     }
-    
-    // Update metadata
+
+    // ===== Replace Thumbnail if new uploaded =====
+    if (imageFile) {
+      if (syllabusData.imagePath) {
+        try {
+          await bucket.file(syllabusData.imagePath).delete();
+        } catch (err) {
+          console.warn("Failed to delete old thumbnail:", err.message);
+        }
+      }
+
+      const imgExt = imageFile.originalname.split(".").pop();
+      const newImagePath = `pdfsyllabi/${sanitizedNewCategory}/thumbnails/${sanitizedNewTitle}_${timestamp}.${imgExt}`;
+      const imgBucketFile = bucket.file(newImagePath);
+
+      await imgBucketFile.save(imageFile.buffer, {
+        metadata: {
+          contentType: imageFile.mimetype,
+          metadata: { category: newCategory, title: newTitle }
+        }
+      });
+
+      [imageUrl] = await imgBucketFile.getSignedUrl({
+        action: "read",
+        expires: "03-01-2500"
+      });
+
+      imagePath = newImagePath;
+    }
+
     const updatedData = {
       ...syllabusData,
       title: newTitle,
       category: newCategory,
       fees: parseFloat(fees) || 0,
       duration: duration ? `${duration} days` : "N/A",
-      updatedAt: Date.now()
+      filePath: pdfPath,
+      fileUrl: pdfUrl,
+      imagePath,
+      imageUrl,
+      updatedAt: timestamp
     };
-    
-    // If category or title changed, we need to create a new entry and delete the old one
+
     if (category !== newCategory || title !== newTitle) {
-      const sanitizedNewCategory = sanitizeFilename(newCategory);
-      const sanitizedNewTitle = sanitizeFilename(newTitle);
       const newSyllabusKey = `${sanitizedNewCategory}/${sanitizedNewTitle}`;
-      
-      // Create new entry with updated data
       await pdfSyllabusRef.child(newSyllabusKey).set(updatedData);
-      
-      // Delete old entry
       await pdfSyllabusRef.child(oldSyllabusKey).remove();
-      
+
       res.json({
-        message: "PDF syllabus updated successfully",
-        data: {
-          id: newSyllabusKey,
-          ...updatedData
-        }
+        message: "PDF syllabus updated successfully (moved to new key)",
+        data: { id: newSyllabusKey, ...updatedData }
       });
     } else {
-      // Update existing entry
       await pdfSyllabusRef.child(oldSyllabusKey).update(updatedData);
-      
       res.json({
         message: "PDF syllabus updated successfully",
-        data: {
-          id: oldSyllabusKey,
-          ...updatedData
-        }
+        data: { id: oldSyllabusKey, ...updatedData }
       });
     }
-    
   } catch (error) {
     console.error("Error updating PDF syllabus:", error);
     res.status(500).json({ error: "Failed to update PDF syllabus" });
@@ -4676,32 +4727,41 @@ app.get("/api/pdf-syllabi/category/:category", async (req, res) => {
 app.delete("/api/pdf-syllabi/:category/:title", async (req, res) => {
   try {
     const { category, title } = req.params;
-    
+
     const sanitizedCategory = sanitizeFilename(category);
     const sanitizedTitle = sanitizeFilename(title);
     const syllabusKey = `${sanitizedCategory}/${sanitizedTitle}`;
-    
-    // Check if syllabus exists
-    const syllabusSnapshot = await pdfSyllabusRef.child(syllabusKey).once('value');
+
+    const syllabusSnapshot = await pdfSyllabusRef.child(syllabusKey).once("value");
     const syllabusData = syllabusSnapshot.val();
-    
-    if (!syllabusData) {
+
+    if (!syllabusData)
       return res.status(404).json({ error: "PDF syllabus not found" });
-    }
-    
-    // Delete file from storage if it exists
+
+    // Delete PDF file
     if (syllabusData.filePath) {
       try {
         await bucket.file(syllabusData.filePath).delete();
-      } catch (deleteError) {
-        console.warn("Failed to delete file, it might not exist:", deleteError);
+        console.log(`Deleted PDF file: ${syllabusData.filePath}`);
+      } catch (err) {
+        console.warn("Failed to delete PDF:", err.message);
       }
     }
-    
-    // Delete syllabus from Realtime Database
+
+    // Delete thumbnail
+    if (syllabusData.imagePath) {
+      try {
+        await bucket.file(syllabusData.imagePath).delete();
+        console.log(`Deleted thumbnail: ${syllabusData.imagePath}`);
+      } catch (err) {
+        console.warn("Failed to delete thumbnail:", err.message);
+      }
+    }
+
+    // Delete entry
     await pdfSyllabusRef.child(syllabusKey).remove();
-    
-    res.json({ message: "PDF syllabus deleted successfully" });
+
+    res.json({ message: "PDF syllabus and thumbnail deleted successfully" });
   } catch (error) {
     console.error("Error deleting PDF syllabus:", error);
     res.status(500).json({ error: "Failed to delete PDF syllabus" });
@@ -4710,8 +4770,8 @@ app.delete("/api/pdf-syllabi/:category/:title", async (req, res) => {
 
 
 
-//Api for pdf syllabus purchasers
 
+//Api for pdf syllabus purchasers
 // API to get all PDF syllabus purchasers
 app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
   try {
@@ -4752,7 +4812,7 @@ app.get('/api/pdfsyllabuspurchasers', async (req, res) => {
 
 
 //VideoSyllabus Apis
-
+//*********************************************************** */
 // ✅ Firebase Realtime Database reference for video syllabus categories
 const videoSyllabusCategoryRef = realtimeDatabase.ref('videosyllabuscategories');
 const videoSyllabusRef = realtimeDatabase.ref('videosyllabi');
@@ -4841,73 +4901,77 @@ app.delete("/api/videosyllabuscategories/:id", async (req, res) => {
 
 // Create or update Video syllabus
 // Use videoUpload.single for the video file upload route
-app.post("/api/video-syllabi", videoUpload.single('videoFile'), async (req, res) => {
+app.post("/api/video-syllabi", videoImageUpload, async (req, res) => {
   try {
-    // After Multer processes the file, it will be available as req.file
-    if (!req.file) {
-      return res.status(400).json({ error: "Video file is required" });
-    }
-    
+    const videoFile = req.files?.videoFile?.[0];
+    const imageFile = req.files?.imageFile?.[0];
     const { category, title, fees, duration } = req.body;
-    
-    if (!category || !title) {
-      return res.status(400).json({ error: "Category and title are required" });
-    }
-    
-    // The file data is now in req.file
-    const videoFile = req.file;
+
+    if (!videoFile) return res.status(400).json({ error: "Video file is required" });
+    if (!category || !title) return res.status(400).json({ error: "Category and title are required" });
+
     const timestamp = Date.now();
     const sanitizedTitle = sanitizeFilename(title);
     const sanitizedCategory = sanitizeFilename(category);
-    
-    // Get file extension from original filename
-    const fileExtension = videoFile.originalname.split('.').pop();
-    
-    // Create a unique file path in Firebase Storage
-    const filePath = `videosyllabi/${sanitizedCategory}/${sanitizedTitle}_${timestamp}.${fileExtension}`;
-    
-    // Upload file to Firebase Storage
-    const fileBuffer = videoFile.buffer; // With Multer, file data is in the buffer property
-    const file = bucket.file(filePath);
-    
-    await file.save(fileBuffer, {
+
+    // ===== Upload Video =====
+    const videoExt = videoFile.originalname.split(".").pop();
+    const videoPath = `videosyllabi/${sanitizedCategory}/${sanitizedTitle}_${timestamp}.${videoExt}`;
+    const videoBucketFile = bucket.file(videoPath);
+
+    await videoBucketFile.save(videoFile.buffer, {
       metadata: {
-        contentType: videoFile.mimetype || 'video/mp4',
+        contentType: videoFile.mimetype,
+        metadata: { category, title, originalName: videoFile.originalname },
+      },
+    });
+
+    const [videoUrl] = await videoBucketFile.getSignedUrl({
+      action: "read",
+      expires: "03-01-2500",
+    });
+
+    // ===== Upload Thumbnail (optional) =====
+    let imagePath = null;
+    let imageUrl = null;
+    if (imageFile) {
+      const imgExt = imageFile.originalname.split(".").pop();
+      imagePath = `videosyllabi/${sanitizedCategory}/thumbnails/${sanitizedTitle}_${timestamp}.${imgExt}`;
+      const imgBucketFile = bucket.file(imagePath);
+
+      await imgBucketFile.save(imageFile.buffer, {
         metadata: {
-          originalName: videoFile.originalname, // With Multer, the file name is in originalname property
-          category,
-          title
-        }
-      }
-    });
-    
-    // Get the public URL of the file
-    const [url] = await file.getSignedUrl({
-      action: 'read',
-      expires: '03-01-2500' // Long expiration date
-    });
-    
-    // Create syllabus entry in Realtime Database
+          contentType: imageFile.mimetype,
+          metadata: { category, title, originalName: imageFile.originalname },
+        },
+      });
+
+      [imageUrl] = await imgBucketFile.getSignedUrl({
+        action: "read",
+        expires: "03-01-2500",
+      });
+    }
+
+    // ===== Save Data in Database =====
     const syllabusData = {
       title,
       category,
       fees: parseFloat(fees) || 0,
       duration: duration ? `${duration} days` : "N/A",
-      filePath,
-      fileUrl: url,
+      filePath: videoPath,
+      fileUrl: videoUrl,
+      imagePath,
+      imageUrl,
       createdAt: timestamp,
-      updatedAt: timestamp
+      updatedAt: timestamp,
     };
-    
+
     const syllabusKey = `${sanitizedCategory}/${sanitizedTitle}`;
     await videoSyllabusRef.child(syllabusKey).set(syllabusData);
-    
+
     res.status(201).json({
       message: "Video syllabus created successfully",
-      data: {
-        id: syllabusKey,
-        ...syllabusData
-      }
+      data: syllabusData,
     });
   } catch (error) {
     console.error("Error creating video syllabus:", error);
@@ -4915,75 +4979,112 @@ app.post("/api/video-syllabi", videoUpload.single('videoFile'), async (req, res)
   }
 });
 
+
 // Update Video syllabus
-app.put("/api/video-syllabi/:category/:title", async (req, res) => {
+app.put("/api/video-syllabi/:category/:title", videoImageUpload, async (req, res) => {
   try {
     const { category, title } = req.params;
     const { newCategory, newTitle, fees, duration } = req.body;
-    
+    const videoFile = req.files?.videoFile?.[0];
+    const imageFile = req.files?.imageFile?.[0];
+
     if (!newCategory || !newTitle) {
       return res.status(400).json({ error: "Category and title are required" });
     }
-    
+
     const sanitizedOldCategory = sanitizeFilename(category);
     const sanitizedOldTitle = sanitizeFilename(title);
     const oldSyllabusKey = `${sanitizedOldCategory}/${sanitizedOldTitle}`;
-    
-    // Check if syllabus exists
-    const syllabusSnapshot = await videoSyllabusRef.child(oldSyllabusKey).once('value');
+
+    // Fetch existing record
+    const syllabusSnapshot = await videoSyllabusRef.child(oldSyllabusKey).once("value");
     const syllabusData = syllabusSnapshot.val();
-    
-    if (!syllabusData) {
-      return res.status(404).json({ error: "Video syllabus not found" });
+    if (!syllabusData) return res.status(404).json({ error: "Video syllabus not found" });
+
+    const timestamp = Date.now();
+    const sanitizedNewCategory = sanitizeFilename(newCategory);
+    const sanitizedNewTitle = sanitizeFilename(newTitle);
+
+    let videoPath = syllabusData.filePath;
+    let videoUrl = syllabusData.fileUrl;
+    let imagePath = syllabusData.imagePath;
+    let imageUrl = syllabusData.imageUrl;
+
+    // ===== If new video uploaded =====
+    if (videoFile) {
+      const videoExt = videoFile.originalname.split(".").pop();
+      videoPath = `videosyllabi/${sanitizedNewCategory}/${sanitizedNewTitle}_${timestamp}.${videoExt}`;
+      const videoBucketFile = bucket.file(videoPath);
+
+      await videoBucketFile.save(videoFile.buffer, {
+        metadata: {
+          contentType: videoFile.mimetype,
+          metadata: { category: newCategory, title: newTitle },
+        },
+      });
+
+      [videoUrl] = await videoBucketFile.getSignedUrl({
+        action: "read",
+        expires: "03-01-2500",
+      });
     }
-    
-    // Update metadata
+
+    // ===== If new image uploaded =====
+    if (imageFile) {
+      const imgExt = imageFile.originalname.split(".").pop();
+      imagePath = `videosyllabi/${sanitizedNewCategory}/thumbnails/${sanitizedNewTitle}_${timestamp}.${imgExt}`;
+      const imgBucketFile = bucket.file(imagePath);
+
+      await imgBucketFile.save(imageFile.buffer, {
+        metadata: {
+          contentType: imageFile.mimetype,
+          metadata: { category: newCategory, title: newTitle },
+        },
+      });
+
+      [imageUrl] = await imgBucketFile.getSignedUrl({
+        action: "read",
+        expires: "03-01-2500",
+      });
+    }
+
+    // ===== Update data =====
     const updatedData = {
       ...syllabusData,
       title: newTitle,
       category: newCategory,
       fees: parseFloat(fees) || 0,
       duration: duration ? `${duration} days` : "N/A",
-      updatedAt: Date.now()
+      filePath: videoPath,
+      fileUrl: videoUrl,
+      imagePath,
+      imageUrl,
+      updatedAt: timestamp,
     };
-    
-    // If category or title changed, we need to create a new entry and delete the old one
+
+    // Move to new key if category/title changed
     if (category !== newCategory || title !== newTitle) {
-      const sanitizedNewCategory = sanitizeFilename(newCategory);
-      const sanitizedNewTitle = sanitizeFilename(newTitle);
       const newSyllabusKey = `${sanitizedNewCategory}/${sanitizedNewTitle}`;
-      
-      // Create new entry with updated data
       await videoSyllabusRef.child(newSyllabusKey).set(updatedData);
-      
-      // Delete old entry
       await videoSyllabusRef.child(oldSyllabusKey).remove();
-      
+
       res.json({
-        message: "Video syllabus updated successfully",
-        data: {
-          id: newSyllabusKey,
-          ...updatedData
-        }
+        message: "Video syllabus updated successfully (moved to new key)",
+        data: { id: newSyllabusKey, ...updatedData },
       });
     } else {
-      // Update existing entry
       await videoSyllabusRef.child(oldSyllabusKey).update(updatedData);
-      
       res.json({
         message: "Video syllabus updated successfully",
-        data: {
-          id: oldSyllabusKey,
-          ...updatedData
-        }
+        data: { id: oldSyllabusKey, ...updatedData },
       });
     }
-    
   } catch (error) {
     console.error("Error updating video syllabus:", error);
     res.status(500).json({ error: "Failed to update video syllabus" });
   }
 });
+
 
 // Replace Video file for existing syllabus
 app.put("/api/video-syllabi/:category/:title/file", videoUpload.single('videoFile'), async (req, res) => {
@@ -5115,37 +5216,51 @@ app.get("/api/video-syllabi/category/:category", async (req, res) => {
 app.delete("/api/video-syllabi/:category/:title", async (req, res) => {
   try {
     const { category, title } = req.params;
-    
+
     const sanitizedCategory = sanitizeFilename(category);
     const sanitizedTitle = sanitizeFilename(title);
     const syllabusKey = `${sanitizedCategory}/${sanitizedTitle}`;
-    
-    // Check if syllabus exists
-    const syllabusSnapshot = await videoSyllabusRef.child(syllabusKey).once('value');
+
+    // Fetch syllabus record
+    const syllabusSnapshot = await videoSyllabusRef.child(syllabusKey).once("value");
     const syllabusData = syllabusSnapshot.val();
-    
+
     if (!syllabusData) {
       return res.status(404).json({ error: "Video syllabus not found" });
     }
-    
-    // Delete file from storage if it exists
+
+    // ===== Delete Video File =====
     if (syllabusData.filePath) {
       try {
         await bucket.file(syllabusData.filePath).delete();
-      } catch (deleteError) {
-        console.warn("Failed to delete file, it might not exist:", deleteError);
+        console.log(`Deleted video file: ${syllabusData.filePath}`);
+      } catch (err) {
+        console.warn("⚠️ Failed to delete video file (might not exist):", err.message);
       }
     }
-    
-    // Delete syllabus from Realtime Database
+
+    // ===== Delete Thumbnail Image =====
+    if (syllabusData.imagePath) {
+      try {
+        await bucket.file(syllabusData.imagePath).delete();
+        console.log(`Deleted thumbnail image: ${syllabusData.imagePath}`);
+      } catch (err) {
+        console.warn("⚠️ Failed to delete thumbnail (might not exist):", err.message);
+      }
+    }
+
+    // ===== Delete Database Entry =====
     await videoSyllabusRef.child(syllabusKey).remove();
-    
-    res.json({ message: "Video syllabus deleted successfully" });
+
+    res.json({
+      message: "Video syllabus and associated files deleted successfully",
+    });
   } catch (error) {
     console.error("Error deleting video syllabus:", error);
     res.status(500).json({ error: "Failed to delete video syllabus" });
   }
 });
+
 
 
 
@@ -5403,6 +5518,570 @@ app.get('/api/videosyllabuspurchasers', async (req, res) => {
     });
   }
 });
+
+
+
+//Super user apis
+
+// Super user API
+app.post("/api/admin-super-user", async (req, res) => {
+  try {
+    const { month, extraDays, price, discountPercent, finalPrice, totalDays } = req.body;
+
+    // Validate inputs
+    if (
+      month === undefined ||
+      extraDays === undefined ||
+      price === undefined ||
+      discountPercent === undefined ||
+      finalPrice === undefined ||
+      totalDays === undefined
+    ) {
+      return res.status(400).json({ success: false, message: "Missing required fields" });
+    }
+
+    // Reference to the Realtime Database node
+    const ref = realtimeDatabase.ref("AdminSuperUserData");
+
+    // Generate unique entry key
+    const newEntryRef = ref.push();
+
+    // Data to store
+    const data = {
+      month,
+      extraDays,
+      price,
+      discountPercent, // ✅ stored as percentage now
+      finalPrice,
+      totalDays,
+      createdAt: new Date().toISOString(),
+    };
+
+    // Save data in Firebase
+    await newEntryRef.set(data);
+
+    return res.status(201).json({
+      success: true,
+      message: "Admin data stored successfully",
+      id: newEntryRef.key,
+      data,
+    });
+  } catch (error) {
+    console.error("Error storing admin data:", error);
+    return res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+});
+
+
+app.get("/api/admin-super-user", async (req, res) => {
+  try {
+    // Reference to the Realtime Database node
+    const ref = realtimeDatabase.ref("AdminSuperUserData");
+
+    // Fetch data once
+    const snapshot = await ref.once("value");
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({
+        success: false,
+        message: "No subscription data found",
+      });
+    }
+
+    const data = snapshot.val();
+
+    // Convert data object to an array of entries
+    const formattedData = Object.keys(data).map((key) => ({
+      id: key,
+      ...data[key],
+    }));
+
+    return res.status(200).json({
+      success: true,
+      message: "Fetched all Admin Super User data successfully",
+      data: formattedData,
+    });
+  } catch (error) {
+    console.error("Error fetching Admin Super User data:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+    });
+  }
+});
+
+app.put("/api/admin-super-user/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { month, extraDays, price, discountPercent, finalPrice, totalDays } = req.body;
+
+    if (!id) {
+      return res.status(400).json({ success: false, message: "Missing record ID" });
+    }
+
+    const ref = realtimeDatabase.ref(`AdminSuperUserData/${id}`);
+
+    const data = {
+      month,
+      extraDays,
+      price,
+      discountPercent,
+      finalPrice,
+      totalDays,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await ref.update(data);
+
+    return res.status(200).json({
+      success: true,
+      message: "Admin Super User record updated successfully",
+      data,
+    });
+  } catch (error) {
+    console.error("Error updating Admin Super User record:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Internal Server Error",
+    });
+  }
+});
+
+app.delete("/api/admin-super-user/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const ref = realtimeDatabase.ref(`AdminSuperUserData/${id}`);
+    await ref.remove();
+    return res.status(200).json({ success: true, message: "Record deleted successfully" });
+  } catch (error) {
+    console.error("Error deleting record:", error);
+    return res.status(500).json({ success: false, message: "Internal Server Error" });
+  }
+});
+
+
+//super user purchase api
+
+// 1️⃣ Create Super User Subscription Order
+app.post("/api/create-super-user-order", async (req, res) => {
+  try {
+    const { amount, notes } = req.body;
+
+    const options = {
+      amount: Math.round(amount * 100), // Convert to paise
+      currency: "INR",
+      receipt: `super_user_receipt_${Date.now()}`,
+      notes,
+    };
+
+    const order = await razorpay.orders.create(options);
+
+    return res.json({
+      success: true,
+      order,
+    });
+  } catch (error) {
+    console.error("❌ Error creating super user order:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to create super user payment order",
+      message: error.message,
+    });
+  }
+});
+
+
+// 2️⃣ Verify Super User Payment
+app.post("/api/verify-super-user-payment", async (req, res) => {
+  try {
+    const { orderId, paymentId, signature, userId, subscriptionId, planMonth } = req.body;
+
+    const generatedSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(`${orderId}|${paymentId}`)
+      .digest("hex");
+
+    if (generatedSignature !== signature) {
+      return res.status(400).json({
+        success: false,
+        error: "Invalid super user payment signature",
+      });
+    }
+
+    // ✅ Optionally store order details in DB here
+    // await firestore.collection("SuperUserOrders").add({ userId, subscriptionId, paymentId, planMonth, createdAt: new Date() });
+
+    return res.json({
+      success: true,
+      message: "Super user payment verified successfully",
+      paymentId,
+      userId,
+      subscriptionId,
+      planMonth,
+    });
+  } catch (error) {
+    console.error("❌ Error verifying super user payment:", error);
+    return res.status(500).json({
+      success: false,
+      error: "Failed to verify super user payment",
+      message: error.message,
+    });
+  }
+});
+
+// 3️⃣ Register New Super User
+app.post("/api/super-user-complete-purchase", async (req, res) => {
+  try {
+    const {
+      userId, // optional on first time
+      name,
+      age,
+      gender,
+      phoneNo,
+      email,
+      district,
+      state,
+      subscriptionDetails,
+      paymentDetails,
+      purchaseDate,
+      expiryDate,
+    } = req.body;
+
+    // ✅ Validate inputs
+    if (
+      !subscriptionDetails ||
+      !paymentDetails ||
+      !purchaseDate ||
+      !expiryDate ||
+      !phoneNo
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields",
+      });
+    }
+
+    let finalUserId = userId;
+    let isNewUser = false;
+
+    // ✅ If userId not provided, create a new one
+    if (!finalUserId) {
+      isNewUser = true;
+      let unique = false;
+      while (!unique) {
+        finalUserId = Math.floor(100000 + Math.random() * 900000).toString();
+        const checkRef = realtimeDatabase.ref(`SuperUserPurchases/${finalUserId}`);
+        const checkSnap = await checkRef.once("value");
+        if (!checkSnap.exists()) unique = true;
+      }
+    }
+
+    // ✅ Check if user already exists
+    const userRef = realtimeDatabase.ref(`SuperUserPurchases/${finalUserId}`);
+    const snapshot = await userRef.once("value");
+
+    const purchaseId = `PUR_${Date.now()}_${finalUserId}`;
+
+    const purchaseData = {
+      purchaseId,
+      subscriptionDetails,
+      paymentDetails,
+      purchaseDate,
+      expiryDate,
+      isActive: new Date(expiryDate) > new Date(),
+      createdAt: new Date().toISOString(),
+    };
+
+    if (!snapshot.exists()) {
+      // 🆕 New user — create record with user details
+      const newUserData = {
+        userId: finalUserId,
+        userDetails: {
+          name,
+          age: parseInt(age),
+          gender,
+          phoneNo,
+          email: email || "",
+          district,
+          state,
+        },
+        purchases: {
+          [purchaseId]: purchaseData,
+        },
+        latestPurchaseId: purchaseId,
+        latestExpiry: expiryDate,
+        hasActiveSubscription: new Date(expiryDate) > new Date(),
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      await userRef.set(newUserData);
+
+      return res.status(201).json({
+        success: true,
+        message: "New Super User created and purchase saved",
+        userId: finalUserId,
+        data: newUserData,
+      });
+    } else {
+      // 🔁 Existing user — add repurchase
+      const existingData = snapshot.val();
+
+      await userRef.child("purchases").child(purchaseId).set(purchaseData);
+
+      await userRef.update({
+        latestPurchaseId: purchaseId,
+        latestExpiry: expiryDate,
+        hasActiveSubscription: new Date(expiryDate) > new Date(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: "Repurchase added successfully",
+        userId: finalUserId,
+        purchaseId,
+        purchaseData,
+      });
+    }
+  } catch (error) {
+    console.error("❌ Error completing super user purchase:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to complete purchase",
+      error: error.message,
+    });
+  }
+});
+
+// 4 Register New Super User
+app.get("/api/super-user-all", async (req, res) => {
+  try {
+    const ref = realtimeDatabase.ref("SuperUserPurchases");
+    const snapshot = await ref.once("value");
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({
+        success: false,
+        message: "No purchasers found",
+        purchasers: [],
+      });
+    }
+
+    const data = snapshot.val();
+
+    // Convert object to array for easier frontend use
+    const purchasers = Object.keys(data).map((userId) => ({
+      userId,
+      ...data[userId],
+    }));
+
+    // Optional: sort by latest purchase (descending)
+    purchasers.sort((a, b) => {
+      const dateA = new Date(a.latestExpiry || 0);
+      const dateB = new Date(b.latestExpiry || 0);
+      return dateB - dateA;
+    });
+
+    return res.status(200).json({
+      success: true,
+      count: purchasers.length,
+      purchasers,
+    });
+  } catch (error) {
+    console.error("❌ Error fetching all purchasers:", error);
+    return res.status(500).json({
+      success: false,
+      message: "Failed to fetch purchasers",
+      error: error.message,
+    });
+  }
+});
+
+//5 varify user exit or not
+app.get("/api/super-user-verify/:userId", async (req, res) => {
+  const { userId } = req.params;
+  const userRef = realtimeDatabase.ref(`SuperUserPurchases/${userId}`);
+  const snapshot = await userRef.once('value');
+  
+  if (snapshot.exists()) {
+    return res.json({ exists: true, userDetails: snapshot.val().userDetails });
+  }
+  return res.json({ exists: false });
+});
+
+
+//Super User practice test apis (user)
+// API to get all practice tests for super user (from Realtime DB)
+app.get("/api/super-user-practice-tests", async (req, res) => {
+  try {
+    const snapshot = await practiceTestsRef.once('value');
+    const practiceTests = [];
+
+    snapshot.forEach((categorySnapshot) => {
+      const category = categorySnapshot.key;
+      
+      categorySnapshot.forEach((titleSnapshot) => {
+        const examData = titleSnapshot.val();
+        practiceTests.push({
+          category: category,
+          examId: titleSnapshot.key,
+          title: titleSnapshot.key,
+          ...examData
+        });
+      });
+    });
+
+    res.json({ 
+      success: true, 
+      practiceTests: practiceTests 
+    });
+  } catch (error) {
+    console.error("Error fetching super user practice tests:", error);
+    res.status(500).json({ 
+      success: false, 
+      error: "Failed to fetch practice tests" 
+    });
+  }
+});
+
+// API to get all questions for a specific exam (already exists, keep it)
+app.get("/api/practice-tests/:category/:examId/questions", async (req, res) => {
+  const { category, examId } = req.params;
+
+  try {
+    const questionsCollection = firestore.collection("PracticeTests").doc(category)
+      .collection("Exams").doc(examId)
+      .collection("Questions");
+
+    const questionsSnapshot = await questionsCollection.orderBy("order", "asc").get();
+
+    if (questionsSnapshot.empty) {
+      return res.status(200).json({ questions: [] });
+    }
+
+    const questions = [];
+    questionsSnapshot.forEach((doc) => {
+      const questionData = doc.data();
+      questions.push({
+        id: doc.id,
+        question: questionData.question,
+        options: questionData.options,
+        correctAnswer: questionData.correctAnswer,
+        imageUrl: questionData.imageUrl || null,
+        order: questionData.order
+      });
+    });
+
+    res.status(200).json({ questions });
+  } catch (error) {
+    console.error("Error fetching questions:", error);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+
+
+//Admin Tutorials apis
+
+const tutorialsRef = realtimeDatabase.ref("Tutorials");
+
+app.post("/api/addTutorial", upload.single("videoFile"), async (req, res) => {
+  try {
+    const { category, tutorialName } = req.body;
+    const file = req.file;
+
+    if (!category || !tutorialName || !file) {
+      return res.status(400).json({ error: "All fields are required" });
+    }
+
+    // Create a new tutorial entry
+    const newRef = tutorialsRef.push();
+    const fileName = `${newRef.key}_${file.originalname}`;
+    const filePath = `tutorials/${fileName}`;
+    const fileUpload = bucket.file(filePath);
+
+    // Upload video to storage
+    await fileUpload.save(file.buffer, {
+      metadata: { contentType: file.mimetype },
+    });
+
+    // Get video URL
+    const [videoURL] = await fileUpload.getSignedUrl({
+      action: "read",
+      expires: "03-01-2035",
+    });
+
+    // Save to realtime DB
+    await newRef.set({
+      category,
+      tutorialName,
+      videoURL,
+      videoPath: filePath, // 👈 Store video path for deletion
+      createdAt: Date.now(),
+    });
+
+    res.json({ success: true, message: "Tutorial added successfully" });
+  } catch (error) {
+    console.error("Error uploading tutorial:", error);
+    res.status(500).json({ error: "Failed to upload tutorial" });
+  }
+});
+
+
+app.get("/api/getAllTutorials", async (req, res) => {
+  try {
+    const snapshot = await tutorialsRef.once("value");
+    const data = snapshot.val() || {};
+    const tutorials = Object.entries(data).map(([id, value]) => ({
+      id,
+      ...value,
+    }));
+    res.json(tutorials);
+  } catch (error) {
+    console.error("Error fetching tutorials:", error);
+    res.status(500).json({ error: "Failed to fetch tutorials" });
+  }
+});
+
+
+app.delete("/api/deleteTutorial/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const tutRef = realtimeDatabase.ref(`Tutorials/${id}`);
+    const snapshot = await tutRef.once("value");
+
+    if (!snapshot.exists()) {
+      return res.status(404).json({ error: "Tutorial not found" });
+    }
+
+    const tutData = snapshot.val();
+    const videoPath = tutData.videoPath;
+
+    // 🗑 Delete from Storage (if exists)
+    if (videoPath) {
+      const file = bucket.file(videoPath);
+      const [exists] = await file.exists();
+      if (exists) {
+        await file.delete();
+        console.log(`✅ Deleted video: ${videoPath}`);
+      } else {
+        console.warn(`⚠️ File not found in storage: ${videoPath}`);
+      }
+    } else {
+      console.warn(`⚠️ No videoPath field for tutorial ID: ${id}`);
+    }
+
+    // 🗑 Remove from Realtime DB
+    await tutRef.remove();
+
+    res.json({ success: true, message: "Tutorial deleted successfully" });
+  } catch (error) {
+    console.error("🔥 Error deleting tutorial:", error.message, error);
+    res.status(500).json({ error: "Failed to delete tutorial", details: error.message });
+  }
+});
+
 
 
 
