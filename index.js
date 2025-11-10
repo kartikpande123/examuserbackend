@@ -6082,7 +6082,47 @@ app.delete("/api/deleteTutorial/:id", async (req, res) => {
   }
 });
 
+//convrted sse to normal api /api/exams
+app.get("/api/exams/json", async (req, res) => {
+  try {
+    const realtimeDatabase = admin.database(); // Realtime Database reference
 
+    const examsRef = realtimeDatabase.ref("ExamDateTime");
+    const examsSnapshot = await examsRef.once("value");
+
+    const exams = [];
+
+    // Fetch each exam and its subcollections
+    examsSnapshot.forEach(examSnap => {
+      const examId = examSnap.key;
+      const examData = examSnap.val();
+
+      const examDetails = examData.examDetails || {};
+      const questions = examData.questions || {};
+
+      exams.push({
+        id: examId,
+        ...examData,
+        examDetails,
+        questions: Object.entries(questions).map(([id, data]) => ({ id, ...data }))
+      });
+    });
+
+    // Send the data to the client as a normal JSON response
+    res.json({
+      success: true,
+      data: exams
+    });
+    
+  } catch (error) {
+    console.error("Error fetching exams:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to fetch exams",
+      details: error.message
+    });
+  }
+});
 
 
 // Start the server
