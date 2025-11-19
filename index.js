@@ -1082,6 +1082,40 @@ app.get("/api/today-exams", (req, res) => {
   });
 });
 
+//for android
+app.get("/api/today-exams/json", async (req, res) => {
+  try {
+    const today = moment().format('YYYY-MM-DD');
+    const examRef = realtimeDatabase.ref('ExamDateTime');
+    const snapshot = await examRef.once('value');
+    const allExams = snapshot.val();
+
+    const todayExams = Object.entries(allExams || {})
+      .filter(([_, exam]) => exam.date === today)
+      .map(([id, exam]) => ({
+        id,
+        date: exam.date,
+        startTime: exam.startTime,
+        endTime: exam.endTime,
+        marks: exam.marks,
+        price: exam.price,
+        updatedAt: exam.updatedAt
+      }))
+      .sort((a, b) => moment(a.startTime, 'hh:mm A').diff(moment(b.startTime, 'hh:mm A')));
+
+    res.json({
+      success: true,
+      data: todayExams
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch exam data',
+      details: error.message
+    });
+  }
+});
+
 app.post('/api/timeout-save-answers', async (req, res) => {
   try {
     const { answers } = req.body;
