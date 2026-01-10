@@ -2111,7 +2111,7 @@ app.put("/api/update-student/:studentId", async (req, res) => {
 
 
 //Api for practice questions 
-// API endpoint to fetch practice exam questions
+// API endpoint to fetch practice exam questions               cc
 
 app.get("/api/practice-tests/:category/:examId/questions", async (req, res) => {
   const { category, examId } = req.params;
@@ -3818,7 +3818,7 @@ app.delete("/api/practice-tests/:category/:title", async (req, res) => {
 // API to add a question to a specific practice test
 app.post("/api/practice-tests/:category/:examId/questions", upload.single("image"), async (req, res) => {
   const { category, examId } = req.params;
-  const { question, options, correctAnswer, compressImage } = req.body;
+  const { question, options, correctAnswer, correctAnswerContext, compressImage } = req.body;
   const image = req.file;
 
   try {
@@ -3851,6 +3851,11 @@ app.post("/api/practice-tests/:category/:examId/questions", upload.single("image
       order: nextOrder,
       timestamp: admin.firestore.FieldValue.serverTimestamp()
     };
+
+    // Add correctAnswerContext if provided (optional field)
+    if (correctAnswerContext && correctAnswerContext.trim() !== "") {
+      questionData.correctAnswerContext = correctAnswerContext.trim();
+    }
 
     // Handle image upload to Firebase Storage if present
     if (image) {
@@ -3927,7 +3932,8 @@ app.post("/api/practice-tests/:category/:examId/questions", upload.single("image
           message: "Question added successfully",
           questionId: questionDoc.id,
           order: nextOrder,
-          imageUrl
+          imageUrl,
+          correctAnswerContext: questionData.correctAnswerContext || null
         });
       } catch (error) {
         console.error("Error in upload or save:", error);
@@ -3940,7 +3946,8 @@ app.post("/api/practice-tests/:category/:examId/questions", upload.single("image
       return res.status(200).json({
         message: "Question added successfully",
         questionId: questionDoc.id,
-        order: nextOrder
+        order: nextOrder,
+        correctAnswerContext: questionData.correctAnswerContext || null
       });
     }
   } catch (error) {
@@ -3952,7 +3959,7 @@ app.post("/api/practice-tests/:category/:examId/questions", upload.single("image
 // API to update a question
 app.put("/api/practice-tests/:category/:examId/questions/:questionId", upload.single("image"), async (req, res) => {
   const { category, examId, questionId } = req.params;
-  const { question, options, correctAnswer, compressImage } = req.body;
+  const { question, options, correctAnswer, correctAnswerContext, compressImage } = req.body;
   const image = req.file;
 
   try {
@@ -3989,6 +3996,16 @@ app.put("/api/practice-tests/:category/:examId/questions/:questionId", upload.si
       correctAnswer: parsedCorrectAnswer,
       updatedAt: admin.firestore.FieldValue.serverTimestamp()
     };
+
+    // Handle correctAnswerContext (optional field)
+    if (correctAnswerContext !== undefined) {
+      if (correctAnswerContext.trim() !== "") {
+        updateData.correctAnswerContext = correctAnswerContext.trim();
+      } else {
+        // If empty string is sent, remove the field
+        updateData.correctAnswerContext = admin.firestore.FieldValue.delete();
+      }
+    }
 
     // Handle image upload if a new image is provided
     if (image) {
@@ -4077,7 +4094,8 @@ app.put("/api/practice-tests/:category/:examId/questions/:questionId", upload.si
         
         return res.status(200).json({
           message: "Question updated successfully",
-          imageUrl
+          imageUrl,
+          correctAnswerContext: updateData.correctAnswerContext || null
         });
       } catch (error) {
         console.error("Error in upload or update:", error);
@@ -4088,7 +4106,8 @@ app.put("/api/practice-tests/:category/:examId/questions/:questionId", upload.si
       await questionDocRef.update(updateData);
 
       return res.status(200).json({
-        message: "Question updated successfully"
+        message: "Question updated successfully",
+        correctAnswerContext: updateData.correctAnswerContext || null
       });
     }
   } catch (error) {
@@ -4138,7 +4157,7 @@ app.delete("/api/practice-tests/:category/:examId/questions/:questionId", async 
 });
 
 // API to get all questions for a specific exam
-app.get("/api/practice-tests/:category/:examId/questions", async (req, res) => {
+app.get("/api/practice/:category/:examId/questions", async (req, res) => {
   const { category, examId } = req.params;
 
   try {
@@ -4158,16 +4177,56 @@ app.get("/api/practice-tests/:category/:examId/questions", async (req, res) => {
     const questions = [];
     questionsSnapshot.forEach((doc) => {
       const questionData = doc.data();
-      questions.push({
+      
+      // Debug log to check actual Firestore data
+      console.log("Firestore data for question:", doc.id, questionData);
+      console.log("correctAnswerContext exists:", 'correctAnswerContext' in questionData);
+      console.log("correctAnswerContext value:", questionData.correctAnswerContext);
+      
+      // Extract fields with better handling
+      const question = {
         id: doc.id,
-        question: questionData.question,
-        options: questionData.options,
-        correctAnswer: questionData.correctAnswer,
+        question: questionData.question || "",
+        options: questionData.options || [],
+        correctAnswer: questionData.correctAnswer !== undefined ? questionData.correctAnswer : null,
         imageUrl: questionData.imageUrl || null,
-        order: questionData.order
-      });
+        order: questionData.order || 0
+      };
+      
+      // Handle correctAnswerContext with multiple checks
+      if (questionData.correctAnswerContext !== undefined && 
+          questionData.correctAnswerContext !== null && 
+          String(questionData.correctAnswerContext).trim() !== "") {
+        question.correctAnswerContext = String(questionData.correctAnswerContext).trim();
+      } else {
+        question.correctAnswerContext = null;
+      }
+      
+      // Alternative check if field has different name
+      const contextFieldNames = [
+        'correctAnswerContext',
+        'correctanswercontext', // lowercase
+        'context',
+        'explanation',
+        'correctAnswerExplanation'
+      ];
+      
+      // Check for any possible field name
+      for (const fieldName of contextFieldNames) {
+        if (questionData[fieldName] !== undefined && 
+            questionData[fieldName] !== null && 
+            String(questionData[fieldName]).trim() !== "") {
+          question.correctAnswerContext = String(questionData[fieldName]).trim();
+          break;
+        }
+      }
+      
+      questions.push(question);
     });
 
+    // Debug log
+    console.log("Sending questions:", JSON.stringify(questions, null, 2));
+    
     // Return the questions
     res.status(200).json({ questions });
   } catch (error) {
@@ -4175,6 +4234,9 @@ app.get("/api/practice-tests/:category/:examId/questions", async (req, res) => {
     res.status(500).json({ error: "Internal server error" });
   }
 });
+
+
+
 
 // API to save exam date and time for practice tests
 app.post("/api/practice-tests/:category/:examId/date-time", async (req, res) => {
